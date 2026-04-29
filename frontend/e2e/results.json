@@ -1,0 +1,293 @@
+{
+  "config": {
+    "configFile": "/Users/guoss/workspace/company/vast/agents-hive/frontend/playwright.config.ts",
+    "rootDir": "/Users/guoss/workspace/company/vast/agents-hive/frontend/e2e/specs",
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "/Users/guoss/workspace/company/vast/agents-hive/frontend/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "chromium",
+        "name": "chromium",
+        "testDir": "/Users/guoss/workspace/company/vast/agents-hive/frontend/e2e/specs",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "list",
+        null
+      ],
+      [
+        "json",
+        {
+          "outputFile": "e2e/results.json"
+        }
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.59.1",
+    "workers": 1,
+    "webServer": {
+      "command": "npx vite --config e2e/fixture/vite.config.ts",
+      "url": "http://localhost:5180",
+      "reuseExistingServer": false,
+      "timeout": 60000,
+      "stdout": "pipe",
+      "stderr": "pipe"
+    }
+  },
+  "suites": [
+    {
+      "title": "shiki.spec.ts",
+      "file": "shiki.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "python code block: shiki async tokenization produces colored spans",
+          "ok": false,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "chromium",
+              "projectName": "chromium",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "failed",
+                  "duration": 15337,
+                  "error": {
+                    "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m(\u001b[22m\u001b[2m)\u001b[22m failed\n\nLocator: getByTestId('python-section').locator('[data-streamdown=\"code-block\"]').locator('span[style*=\"color\"]').first()\nExpected: visible\nTimeout: 15000ms\nError: element(s) not found\n\nCall log:\n\u001b[2m  - Expect \"toBeVisible\" with timeout 15000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('python-section').locator('[data-streamdown=\"code-block\"]').locator('span[style*=\"color\"]').first()\u001b[22m\n",
+                    "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m(\u001b[22m\u001b[2m)\u001b[22m failed\n\nLocator: getByTestId('python-section').locator('[data-streamdown=\"code-block\"]').locator('span[style*=\"color\"]').first()\nExpected: visible\nTimeout: 15000ms\nError: element(s) not found\n\nCall log:\n\u001b[2m  - Expect \"toBeVisible\" with timeout 15000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('python-section').locator('[data-streamdown=\"code-block\"]').locator('span[style*=\"color\"]').first()\u001b[22m\n\n    at /Users/guoss/workspace/company/vast/agents-hive/frontend/e2e/specs/shiki.spec.ts:30:33",
+                    "location": {
+                      "file": "/Users/guoss/workspace/company/vast/agents-hive/frontend/e2e/specs/shiki.spec.ts",
+                      "column": 33,
+                      "line": 30
+                    },
+                    "snippet": "  28 |   // shiki 完成后会注入带 inline color 的 span token（每个 token 一个 span）\n  29 |   const colored = codeBlock.locator('span[style*=\"color\"]');\n> 30 |   await expect(colored.first()).toBeVisible({ timeout: SHIKI_TIMEOUT });\n     |                                 ^\n  31 |\n  32 |   const count = await colored.count();\n  33 |   expect(count).toBeGreaterThan(5); // 至少 5 个 token（def/hello/name/str/return...）"
+                  },
+                  "errors": [
+                    {
+                      "location": {
+                        "file": "/Users/guoss/workspace/company/vast/agents-hive/frontend/e2e/specs/shiki.spec.ts",
+                        "column": 33,
+                        "line": 30
+                      },
+                      "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m(\u001b[22m\u001b[2m)\u001b[22m failed\n\nLocator: getByTestId('python-section').locator('[data-streamdown=\"code-block\"]').locator('span[style*=\"color\"]').first()\nExpected: visible\nTimeout: 15000ms\nError: element(s) not found\n\nCall log:\n\u001b[2m  - Expect \"toBeVisible\" with timeout 15000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('python-section').locator('[data-streamdown=\"code-block\"]').locator('span[style*=\"color\"]').first()\u001b[22m\n\n\n  28 |   // shiki 完成后会注入带 inline color 的 span token（每个 token 一个 span）\n  29 |   const colored = codeBlock.locator('span[style*=\"color\"]');\n> 30 |   await expect(colored.first()).toBeVisible({ timeout: SHIKI_TIMEOUT });\n     |                                 ^\n  31 |\n  32 |   const count = await colored.count();\n  33 |   expect(count).toBeGreaterThan(5); // 至少 5 个 token（def/hello/name/str/return...）\n    at /Users/guoss/workspace/company/vast/agents-hive/frontend/e2e/specs/shiki.spec.ts:30:33"
+                    }
+                  ],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-20T21:56:17.642Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "error-context",
+                      "contentType": "text/markdown",
+                      "path": "/Users/guoss/workspace/company/vast/agents-hive/frontend/test-results/shiki-python-code-block-sh-1a4ec-tion-produces-colored-spans-chromium/error-context.md"
+                    },
+                    {
+                      "name": "trace",
+                      "contentType": "application/zip",
+                      "path": "/Users/guoss/workspace/company/vast/agents-hive/frontend/test-results/shiki-python-code-block-sh-1a4ec-tion-produces-colored-spans-chromium/trace.zip"
+                    }
+                  ],
+                  "errorLocation": {
+                    "file": "/Users/guoss/workspace/company/vast/agents-hive/frontend/e2e/specs/shiki.spec.ts",
+                    "column": 33,
+                    "line": 30
+                  }
+                }
+              ],
+              "status": "unexpected"
+            }
+          ],
+          "id": "a10639d255d1ff1849b9-a18d913e4be66b57b842",
+          "file": "shiki.spec.ts",
+          "line": 19,
+          "column": 1
+        },
+        {
+          "title": "javascript code block: shiki loads a different grammar lazily",
+          "ok": false,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "chromium",
+              "projectName": "chromium",
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "parallelIndex": 0,
+                  "status": "failed",
+                  "duration": 15234,
+                  "error": {
+                    "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m(\u001b[22m\u001b[2m)\u001b[22m failed\n\nLocator: getByTestId('js-section').locator('[data-streamdown=\"code-block\"]').locator('span[style*=\"color\"]').first()\nExpected: visible\nTimeout: 15000ms\nError: element(s) not found\n\nCall log:\n\u001b[2m  - Expect \"toBeVisible\" with timeout 15000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('js-section').locator('[data-streamdown=\"code-block\"]').locator('span[style*=\"color\"]').first()\u001b[22m\n",
+                    "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m(\u001b[22m\u001b[2m)\u001b[22m failed\n\nLocator: getByTestId('js-section').locator('[data-streamdown=\"code-block\"]').locator('span[style*=\"color\"]').first()\nExpected: visible\nTimeout: 15000ms\nError: element(s) not found\n\nCall log:\n\u001b[2m  - Expect \"toBeVisible\" with timeout 15000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('js-section').locator('[data-streamdown=\"code-block\"]').locator('span[style*=\"color\"]').first()\u001b[22m\n\n    at /Users/guoss/workspace/company/vast/agents-hive/frontend/e2e/specs/shiki.spec.ts:44:33",
+                    "location": {
+                      "file": "/Users/guoss/workspace/company/vast/agents-hive/frontend/e2e/specs/shiki.spec.ts",
+                      "column": 33,
+                      "line": 44
+                    },
+                    "snippet": "  42 |\n  43 |   const colored = codeBlock.locator('span[style*=\"color\"]');\n> 44 |   await expect(colored.first()).toBeVisible({ timeout: SHIKI_TIMEOUT });\n     |                                 ^\n  45 |   expect(await colored.count()).toBeGreaterThan(3);\n  46 | });\n  47 |"
+                  },
+                  "errors": [
+                    {
+                      "location": {
+                        "file": "/Users/guoss/workspace/company/vast/agents-hive/frontend/e2e/specs/shiki.spec.ts",
+                        "column": 33,
+                        "line": 44
+                      },
+                      "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m(\u001b[22m\u001b[2m)\u001b[22m failed\n\nLocator: getByTestId('js-section').locator('[data-streamdown=\"code-block\"]').locator('span[style*=\"color\"]').first()\nExpected: visible\nTimeout: 15000ms\nError: element(s) not found\n\nCall log:\n\u001b[2m  - Expect \"toBeVisible\" with timeout 15000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('js-section').locator('[data-streamdown=\"code-block\"]').locator('span[style*=\"color\"]').first()\u001b[22m\n\n\n  42 |\n  43 |   const colored = codeBlock.locator('span[style*=\"color\"]');\n> 44 |   await expect(colored.first()).toBeVisible({ timeout: SHIKI_TIMEOUT });\n     |                                 ^\n  45 |   expect(await colored.count()).toBeGreaterThan(3);\n  46 | });\n  47 |\n    at /Users/guoss/workspace/company/vast/agents-hive/frontend/e2e/specs/shiki.spec.ts:44:33"
+                    }
+                  ],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-20T21:56:33.525Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "error-context",
+                      "contentType": "text/markdown",
+                      "path": "/Users/guoss/workspace/company/vast/agents-hive/frontend/test-results/shiki-javascript-code-bloc-f7090--a-different-grammar-lazily-chromium/error-context.md"
+                    },
+                    {
+                      "name": "trace",
+                      "contentType": "application/zip",
+                      "path": "/Users/guoss/workspace/company/vast/agents-hive/frontend/test-results/shiki-javascript-code-bloc-f7090--a-different-grammar-lazily-chromium/trace.zip"
+                    }
+                  ],
+                  "errorLocation": {
+                    "file": "/Users/guoss/workspace/company/vast/agents-hive/frontend/e2e/specs/shiki.spec.ts",
+                    "column": 33,
+                    "line": 44
+                  }
+                }
+              ],
+              "status": "unexpected"
+            }
+          ],
+          "id": "a10639d255d1ff1849b9-2fb1cb9975a803024011",
+          "file": "shiki.spec.ts",
+          "line": 36,
+          "column": 1
+        },
+        {
+          "title": "streaming incomplete fence: container renders without crashing",
+          "ok": false,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "chromium",
+              "projectName": "chromium",
+              "results": [
+                {
+                  "workerIndex": 2,
+                  "parallelIndex": 0,
+                  "status": "failed",
+                  "duration": 15235,
+                  "error": {
+                    "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m(\u001b[22m\u001b[2m)\u001b[22m failed\n\nLocator: getByTestId('rust-incomplete-section').locator('[data-streamdown=\"code-block\"]').locator('span[style*=\"color\"]').first()\nExpected: visible\nTimeout: 15000ms\nError: element(s) not found\n\nCall log:\n\u001b[2m  - Expect \"toBeVisible\" with timeout 15000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('rust-incomplete-section').locator('[data-streamdown=\"code-block\"]').locator('span[style*=\"color\"]').first()\u001b[22m\n",
+                    "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m(\u001b[22m\u001b[2m)\u001b[22m failed\n\nLocator: getByTestId('rust-incomplete-section').locator('[data-streamdown=\"code-block\"]').locator('span[style*=\"color\"]').first()\nExpected: visible\nTimeout: 15000ms\nError: element(s) not found\n\nCall log:\n\u001b[2m  - Expect \"toBeVisible\" with timeout 15000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('rust-incomplete-section').locator('[data-streamdown=\"code-block\"]').locator('span[style*=\"color\"]').first()\u001b[22m\n\n    at /Users/guoss/workspace/company/vast/agents-hive/frontend/e2e/specs/shiki.spec.ts:57:33",
+                    "location": {
+                      "file": "/Users/guoss/workspace/company/vast/agents-hive/frontend/e2e/specs/shiki.spec.ts",
+                      "column": 33,
+                      "line": 57
+                    },
+                    "snippet": "  55 |   // 即使未闭合，只要 parseIncompleteMarkdown 生效，shiki 也应该 tokenize 已有部分\n  56 |   const colored = codeBlock.locator('span[style*=\"color\"]');\n> 57 |   await expect(colored.first()).toBeVisible({ timeout: SHIKI_TIMEOUT });\n     |                                 ^\n  58 | });\n  59 |"
+                  },
+                  "errors": [
+                    {
+                      "location": {
+                        "file": "/Users/guoss/workspace/company/vast/agents-hive/frontend/e2e/specs/shiki.spec.ts",
+                        "column": 33,
+                        "line": 57
+                      },
+                      "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m(\u001b[22m\u001b[2m)\u001b[22m failed\n\nLocator: getByTestId('rust-incomplete-section').locator('[data-streamdown=\"code-block\"]').locator('span[style*=\"color\"]').first()\nExpected: visible\nTimeout: 15000ms\nError: element(s) not found\n\nCall log:\n\u001b[2m  - Expect \"toBeVisible\" with timeout 15000ms\u001b[22m\n\u001b[2m  - waiting for getByTestId('rust-incomplete-section').locator('[data-streamdown=\"code-block\"]').locator('span[style*=\"color\"]').first()\u001b[22m\n\n\n  55 |   // 即使未闭合，只要 parseIncompleteMarkdown 生效，shiki 也应该 tokenize 已有部分\n  56 |   const colored = codeBlock.locator('span[style*=\"color\"]');\n> 57 |   await expect(colored.first()).toBeVisible({ timeout: SHIKI_TIMEOUT });\n     |                                 ^\n  58 | });\n  59 |\n    at /Users/guoss/workspace/company/vast/agents-hive/frontend/e2e/specs/shiki.spec.ts:57:33"
+                    }
+                  ],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-04-20T21:56:49.198Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "error-context",
+                      "contentType": "text/markdown",
+                      "path": "/Users/guoss/workspace/company/vast/agents-hive/frontend/test-results/shiki-streaming-incomplete-b25c1-er-renders-without-crashing-chromium/error-context.md"
+                    },
+                    {
+                      "name": "trace",
+                      "contentType": "application/zip",
+                      "path": "/Users/guoss/workspace/company/vast/agents-hive/frontend/test-results/shiki-streaming-incomplete-b25c1-er-renders-without-crashing-chromium/trace.zip"
+                    }
+                  ],
+                  "errorLocation": {
+                    "file": "/Users/guoss/workspace/company/vast/agents-hive/frontend/e2e/specs/shiki.spec.ts",
+                    "column": 33,
+                    "line": 57
+                  }
+                }
+              ],
+              "status": "unexpected"
+            }
+          ],
+          "id": "a10639d255d1ff1849b9-a406cb38247f139ec9f3",
+          "file": "shiki.spec.ts",
+          "line": 48,
+          "column": 1
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-04-20T21:56:16.593Z",
+    "duration": 47992.125,
+    "expected": 0,
+    "skipped": 0,
+    "unexpected": 3,
+    "flaky": 0
+  }
+}

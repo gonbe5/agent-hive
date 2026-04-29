@@ -1,0 +1,14 @@
+{
+  "name": "fm08_eval_gate",
+  "user_id": "u-harry",
+  "session_state": {
+    "focus_mru": [],
+    "changes": {}
+  },
+  "input": "开一个 change 叫做 add-foo",
+  "want_continuation": {
+    "decision": "new"
+  },
+  "required": true,
+  "notes": "FM-8: 本 fixture 的存在本身就是闸门——TestEvalFixtures 必须识别它作为 required，失败即阻断 spec_driven.mode 升级。coverage 低于 75% 时 make test-specdriven 也必须非零退出（Makefile 任务会验）。"
+}

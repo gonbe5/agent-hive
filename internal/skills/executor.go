@@ -1,0 +1,88 @@
+package skills
+
+import (
+	"context"
+	"regexp"
+	"time"
+
+	"github.com/chef-guo/agents-hive/internal/errs"
+)
+
+// ShellExecutor 为可测试性抽象 shell 命令执行。
+// Eng Review #2 决策：返回 stderr，签名为 (stdout, stderr, err)。
+type ShellExecutor interface {
+	Execute(command string) (stdout string, stderr string, err error)
+}
+
+// SandboxExecutor 是 sandbox.Executor 的本地接口镜像，避免 import cycle。
+type SandboxExecutor interface {
+	Execute(ctx context.Context, req SandboxExecRequest) (SandboxExecResult, error)
+	Close() error
+}
+
+// SandboxExecRequest 镜像 sandbox.ExecRequest。
+type SandboxExecRequest struct {
+	Command   string
+	SessionID string
+	Timeout   time.Duration
+	WorkDir   string
+	Env       map[string]string
+}
+
+// SandboxExecResult 镜像 sandbox.ExecResult。
+type SandboxExecResult struct {
+	Stdout   string
+	Stderr   string
+	ExitCode int
+}
+
+// DefaultShellExecutor 委托 SandboxExecutor 执行命令。
+type DefaultShellExecutor struct {
+	Executor SandboxExecutor   // 沙箱执行器（由 bootstrap 注入）
+	Timeout  time.Duration     // 默认 600s（如果为零）
+	WorkDir  string
+}
+
+// Execute 通过 SandboxExecutor 运行命令并返回 stdout 和 stderr。
+func (e *DefaultShellExecutor) Execute(command string) (string, string, error) {
+	if e.Executor == nil {
+		return "", "", errs.New(errs.CodeExecutionFailed, "沙箱执行器未初始化，无法执行技能命令")
+	}
+
+	timeout := e.Timeout
+	if timeout == 0 {
+		timeout = 600 * time.Second
+	}
+	result, err := e.Executor.Execute(context.Background(), SandboxExecRequest{
+		Command:   command,
+		SessionID: "skills-default",
+		Timeout:   timeout,
+		WorkDir:   e.WorkDir,
+	})
+	if err != nil {
+		return "", "", err
+	}
+	return result.Stdout, result.Stderr, nil
+}
+
+// reDynamic 匹配 !`command` 动态上下文占位符
+var reDynamic = regexp.MustCompile("!`([^`]+)`")
+
+// ExecuteDynamicContext 将内容中的 !`command` 占位符替换为
+// 通过给定 ShellExecutor 执行每个命令的输出
+func ExecuteDynamicContext(content string, executor ShellExecutor) (string, error) {
+	var lastErr error
+	result := reDynamic.ReplaceAllStringFunc(content, func(match string) string {
+		sub := reDynamic.FindStringSubmatch(match)
+		if len(sub) < 2 {
+			return match
+		}
+		stdout, _, err := executor.Execute(sub[1])
+		if err != nil {
+			lastErr = err
+			return match
+		}
+		return stdout
+	})
+	return result, lastErr
+}

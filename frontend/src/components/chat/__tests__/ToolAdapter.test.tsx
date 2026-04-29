@@ -1,0 +1,95 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import { ToolAdapter } from '../ToolAdapter';
+
+type ToolCallStatus = { status: 'running' | 'success' | 'error'; duration?: number };
+
+const storeState = vi.hoisted(() => ({
+  toolCallStatuses: {} as Record<string, ToolCallStatus>,
+}));
+
+vi.mock('react-i18next', () => ({
+  useTranslation: () => ({
+    t: (key: string) => {
+      const map: Record<string, string> = {
+        'tools.invoked': 'Invoked',
+        'tools.clickToExpand': 'Click to expand',
+        'tools.clickToCollapse': 'Click to collapse',
+        'tools.output': 'Output',
+        'tools.input': 'Input',
+      };
+      return map[key] ?? key;
+    },
+  }),
+}));
+
+vi.mock('../../../store/chat', () => ({
+  useChatStore: (selector: (s: unknown) => unknown) => selector(storeState),
+}));
+
+vi.mock('../../../utils/toolName', () => ({
+  getToolDisplayName: (name: string) => (name === 'bash_exec' ? 'Shell' : name),
+}));
+
+const baseProps = {
+  id: 'tc-1',
+  name: 'bash_exec',
+  args: '{"command":"ls"}',
+  result: 'file1\nfile2',
+};
+
+describe('ToolAdapter status mapping', () => {
+  beforeEach(() => {
+    storeState.toolCallStatuses = {};
+  });
+
+  // 三状态 × live / replay 两 mode = 6 用例
+  // live = store.toolCallStatuses[id] 有值（websocket 实时推送已入 store）
+  // replay = store 无该 id 条目（session 恢复后尚未回放 / 历史只读）
+
+  it('live / running: Running 徽标 + 运行态 chip（role=status）', () => {
+    storeState.toolCallStatuses = { 'tc-1': { status: 'running' } };
+    render(<ToolAdapter {...baseProps} hasError={false} />);
+    expect(screen.getByText('Running')).toBeTruthy();
+    expect(screen.getByRole('status')).toBeTruthy();
+  });
+
+  it('live / success: Completed 徽标 + 完成态 block toggle', () => {
+    storeState.toolCallStatuses = { 'tc-1': { status: 'success' } };
+    render(<ToolAdapter {...baseProps} hasError={false} />);
+    expect(screen.getByText('Completed')).toBeTruthy();
+    const buttons = screen.getAllByRole('button');
+    // 至少有一个非 disabled 的 toggle（ToolExecutionBlock 的折叠按钮）
+    expect(buttons.some((b) => !b.hasAttribute('disabled'))).toBe(true);
+  });
+
+  it('live / error: Error 徽标 + Tool 外壳 defaultOpen=true', () => {
+    storeState.toolCallStatuses = { 'tc-1': { status: 'running' } };
+    render(<ToolAdapter {...baseProps} hasError={true} />);
+    expect(screen.getByText('Error')).toBeTruthy();
+    // Collapsible 根节点 data-state 应为 open（error 时默认展开）
+    const root = document.querySelector('[data-slot="collapsible"]');
+    expect(root?.getAttribute('data-state')).toBe('open');
+  });
+
+  it('replay / running: store 恢复 running 态时徽标正确', () => {
+    // replay 恢复：store 被 session history reducer 填回 running
+    storeState.toolCallStatuses = { 'tc-1': { status: 'running' } };
+    render(<ToolAdapter {...baseProps} hasError={false} />);
+    expect(screen.getByText('Running')).toBeTruthy();
+  });
+
+  it('replay / success: store 无该 id 时回退到 Completed', () => {
+    storeState.toolCallStatuses = {}; // replay 未回放任何 live 状态
+    render(<ToolAdapter {...baseProps} hasError={false} />);
+    expect(screen.getByText('Completed')).toBeTruthy();
+  });
+
+  it('replay / error: store 无 live 状态 + hasError=true 仍报 Error 并展开', () => {
+    storeState.toolCallStatuses = {};
+    render(<ToolAdapter {...baseProps} hasError={true} />);
+    expect(screen.getByText('Error')).toBeTruthy();
+    const root = document.querySelector('[data-slot="collapsible"]');
+    expect(root?.getAttribute('data-state')).toBe('open');
+  });
+});

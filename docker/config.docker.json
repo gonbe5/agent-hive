@@ -1,0 +1,59 @@
+{
+  "_comment": "Docker 部署专用配置。volumes.workdir 必须与 docker-compose.yml 中 /opt/hive/workdir 挂载一致，保证 sandbox bind mount 路径在宿主机和容器内相同。",
+
+  "server": {
+    "port": 8080,
+    "host": "0.0.0.0",
+    "cors_origins": []
+  },
+
+  "logging": {
+    "level": "info",
+    "format": "json",
+    "file": "/data/logs/hive.log",
+    "console_level": "info",
+    "max_size": 100,
+    "max_backups": 5,
+    "max_age": 14
+  },
+
+  "store": {
+    "type": "postgres",
+    "postgres": {
+      "host": "postgres",
+      "port": 5432,
+      "database": "claw",
+      "user": "claw",
+      "password": "${POSTGRES_PASSWORD}",
+      "ssl_mode": "disable",
+      "max_conns": 10
+    }
+  },
+
+  "sessions_dir": "/opt/hive/workdir/sessions",
+  "custom_tools_dir": "/data/tools",
+
+  "sandbox": {
+    "enabled": true,
+    "type": "docker",
+    "docker": {
+      "image": "hive-sandbox:latest",
+      "cpu_limit": "1.0",
+      "memory_limit": "512m",
+      "pids_limit": 100,
+      "tmpfs_size": "256m",
+      "network": "bridge",
+      "network_disabled": false,
+      "read_only_workdir": false
+    }
+  },
+
+  "gateway": {
+    "enabled": false,
+    "tokens": []
+  },
+
+  "webui": {
+    "enabled": true
+  }
+}

@@ -1,0 +1,225 @@
+package master
+
+import (
+	"context"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/chef-guo/agents-hive/internal/imctx"
+	"github.com/chef-guo/agents-hive/internal/llm"
+	"github.com/chef-guo/agents-hive/internal/specdriven"
+)
+
+// SessionState 表示一个持续的对话会话
+type SessionState struct {
+	// mu 保护所有字段的并发访问（多个 goroutine 可能并发读写）
+	mu sync.RWMutex `json:"-"`
+
+	// 基础信息
+	ID           string    `json:"id"`
+	Name         string    `json:"name"` // 用户友好名称
+	Created      time.Time `json:"created"`
+	LastAccessed time.Time `json:"last_accessed"` // 最后访问时间
+
+	// 对话数据
+	Messages []llm.MessageWithTools `json:"messages"` // 累积的对话历史
+
+	// 元数据
+	Metadata map[string]any `json:"metadata"`          // 额外元数据
+	Tags     []string       `json:"tags,omitempty"`    // 标签
+	UserID   string         `json:"user_id,omitempty"` // 会话所属用户（auth 启用时设置）
+
+	// 统计信息
+	Stats SessionStats `json:"stats"`
+
+	// Spec-driven Phase 2 持久层：user ingress 路径累积的 change 索引
+	// （对应 hive_spec_session_state 行）。
+	// 写入者仅限 session_loop.go:processTask 入口 hook，持锁外写。
+	// subagent / tool 路径触碰应走 runtime guard（specCtxGuard）。
+	SpecState specdriven.SessionSpecState `json:"spec_state,omitzero"`
+
+	// 内部状态（不持久化）
+	lastSavedIndex int         `json:"-"` // 上次保存的消息索引
+	persistFailed  bool        `json:"-"` // 增量持久化失败标记，阻止后续消息写入 DB（防止空洞）
+	dirty          bool        `json:"-"` // 是否有未保存修改
+	activeModel    string      `json:"-"` // 当前激活的模型（运行时）
+	activeLLM      *llm.Client `json:"-"` // 当前 LLM client（可能不同于全局，运行时）
+
+	// specCtx 是 spec-driven 运行时指针，发布后 IMMUTABLE（*specdriven.Context 内部字段禁改）。
+	// 用 atomic.Pointer 而非 sync.Mutex 是 Codex Round 1 P0-6 红线：
+	// react_processor.go 的 LLM 调用栈已经持会话锁，再引入 getSpecCtx()/setSpecCtx() 互斥会死锁。
+	// 写：processTask ingress；读：tool 层、planner 回调、任何持锁位置都安全。
+	specCtx atomic.Pointer[specdriven.Context] `json:"-"`
+
+	// 临时字段（仅在当前请求处理期间有效，不持久化）
+	pendingAttachments     []FileAttachment        `json:"-"`
+	pendingReasoningEffort string                  `json:"-"`
+	pendingModelOverride   string                  `json:"-"`
+	pendingIMContext       *imctx.IMMessageContext `json:"-"`
+
+	// 终止态：用于阻止已取消任务的陈旧写回。
+	terminated         bool      `json:"-"`
+	terminationReason  string    `json:"-"`
+	terminatedAt       time.Time `json:"-"`
+	terminationJournal bool      `json:"-"`
+}
+
+// LoadSpecCtx 返回当前 spec-driven 上下文指针（可能为 nil——表示非 spec-driven 会话）。
+// 调用方禁止 mutate 返回值；要更新必须 new(Context) + StoreSpecCtx。
+func (s *SessionState) LoadSpecCtx() *specdriven.Context {
+	return s.specCtx.Load()
+}
+
+// StoreSpecCtx 原子替换 spec-driven 上下文。
+// 仅限 user ingress 路径调用（session_loop.processTask entry），subagent 写入见 StoreSpecCtxGuarded。
+func (s *SessionState) StoreSpecCtx(ctx *specdriven.Context) {
+	s.specCtx.Store(ctx)
+}
+
+// SessionStats 表示会话的统计信息
+type SessionStats struct {
+	MessageCount  int `json:"message_count"`
+	TaskCount     int `json:"task_count"`
+	ToolCallCount int `json:"tool_call_count"`
+	TotalTokens   int `json:"total_tokens"`
+	ErrorCount    int `json:"error_count"`
+}
+
+// SessionCommand 表示会话级命令
+type SessionCommand string
+
+const (
+	SessionCommandNone   SessionCommand = ""
+	SessionCommandNew    SessionCommand = "new"
+	SessionCommandSwitch SessionCommand = "switch"
+	SessionCommandList   SessionCommand = "list"
+	SessionCommandDelete SessionCommand = "delete"
+	SessionCommandRename SessionCommand = "rename"
+	SessionCommandInfo   SessionCommand = "info"
+	SessionCommandExport SessionCommand = "export"
+	SessionCommandFork   SessionCommand = "fork"   // 创建分支
+	SessionCommandRevert SessionCommand = "revert" // 回滚到指定消息
+)
+
+// FileAttachment 文件附件
+type FileAttachment struct {
+	Filename string `json:"filename"`
+	MimeType string `json:"mime_type"`
+	Data     string `json:"data"` // base64
+}
+
+// SessionRequest 表示会话请求（替代原来的 string）
+type SessionRequest struct {
+	SessionID         string                  `json:"session_id,omitempty"`         // 目标会话 ID（空=当前活跃）
+	Input             string                  `json:"input"`                        // 用户输入
+	Command           SessionCommand          `json:"command,omitempty"`            // 会话命令
+	Args              []string                `json:"args,omitempty"`               // 命令参数
+	ResponseID        uint64                  `json:"-"`                            // per-request 响应标识（ProcessMessage 使用）
+	Attachments       []FileAttachment        `json:"attachments,omitempty"`        // 文件附件
+	ReasoningEffort   string                  `json:"reasoning_effort,omitempty"`   // 推理努力级别: "low"/"medium"/"high"
+	ModelOverride     string                  `json:"model_override,omitempty"`     // 模型覆盖（由 skill/command 设置）
+	ChannelMessageID  string                  `json:"channel_message_id,omitempty"` // IM 平台原消息 ID（供 input_received 事件透传，renderer 基于此做 ack 表情）
+	AckAlreadyEmitted bool                    `json:"-"`                            // Router renderer 路径已提前广播 input_received，避免重复 ack
+	IMContext         *imctx.IMMessageContext `json:"-"`                            // IM 消息上下文（transient，不持久化）
+	SkipUserMessage   bool                    `json:"-"`                            // 跳过追加用户消息（regenerate 专用，避免重复写入）
+	Ctx               context.Context         `json:"-"`                            // 请求上下文（由 ProcessRequestWithResponse 注入）
+}
+
+// TaskResponse 表示任务处理的响应
+type TaskResponse struct {
+	Content   string `json:"content"`           // 响应内容
+	Completed bool   `json:"completed"`         // 任务是否完成
+	Error     string `json:"error,omitempty"`   // 错误信息
+	Exit      bool   `json:"exit"`              // 指示会话应退出
+	Message   string `json:"message,omitempty"` // 系统消息(如"已清空")
+}
+
+// SessionInfo 表示会话的简要信息（用于列表显示）
+type SessionInfo struct {
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	MessageCount int       `json:"message_count"`
+	LastAccessed time.Time `json:"last_accessed"`
+	Tags         []string  `json:"tags,omitempty"`
+	IsActive     bool      `json:"is_active"`
+}
+
+// SetPendingData 设置临时附件、推理努力级别、模型覆盖和 IM 上下文
+func (s *SessionState) SetPendingData(
+	attachments []FileAttachment,
+	effort string,
+	modelOverride string,
+	imCtx *imctx.IMMessageContext,
+) {
+	s.mu.Lock()
+	s.pendingAttachments = attachments
+	s.pendingReasoningEffort = effort
+	s.pendingModelOverride = modelOverride
+	s.pendingIMContext = imCtx
+	s.mu.Unlock()
+}
+
+// GetPendingData 获取临时附件、推理努力级别和模型覆盖（不包含 IMContext，使用 ConsumePendingIMContext）
+func (s *SessionState) GetPendingData() ([]FileAttachment, string, string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.pendingAttachments, s.pendingReasoningEffort, s.pendingModelOverride
+}
+
+// ClearPendingData 清理临时附件、推理努力级别和模型覆盖
+func (s *SessionState) ClearPendingData() {
+	s.mu.Lock()
+	s.pendingAttachments = nil
+	s.pendingReasoningEffort = ""
+	s.pendingModelOverride = ""
+	s.pendingIMContext = nil
+	s.mu.Unlock()
+}
+
+// ConsumePendingIMContext 一次性消费 pendingIMContext（第二次调用返回 nil）
+func (s *SessionState) ConsumePendingIMContext() *imctx.IMMessageContext {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ctx := s.pendingIMContext
+	s.pendingIMContext = nil
+	return ctx
+}
+
+// MarkTerminated 标记会话为已终止；首次调用返回 true，后续幂等返回 false。
+func (s *SessionState) MarkTerminated(reason string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.terminated {
+		return false
+	}
+	s.terminated = true
+	s.terminationReason = reason
+	s.terminatedAt = time.Now()
+	return true
+}
+
+// IsTerminated 返回会话是否已被终止。
+func (s *SessionState) IsTerminated() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.terminated
+}
+
+// TerminationReason 返回终止原因。
+func (s *SessionState) TerminationReason() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.terminationReason
+}
+
+// MarkTerminationJournalEnded 标记终止 journal 已处理；首次返回 true。
+func (s *SessionState) MarkTerminationJournalEnded() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.terminationJournal {
+		return false
+	}
+	s.terminationJournal = true
+	return true
+}

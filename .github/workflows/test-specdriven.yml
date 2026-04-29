@@ -1,0 +1,334 @@
+# Sprint 1.2 (harden-spec-driven-phase2, task 12.12) — dual-flag 准入物理闸门
+#
+# 为什么需要这个 workflow：
+#   harden-spec-driven-phase2 Round 4 三路评审（CEO / Codex / P9 Tech Lead）裁定，
+#   `add-spec-driven-cognition` Phase 2 dual rollout 准入必须靠物理 CI 证据，不再
+#   接受"本地绿 = 可上线"的 self-report。本 workflow 是 `gh api repos/:o/:r/branches/
+#   main/protection` required status check 里的绑定 job，合并前必须绿。
+#
+# 为什么上 services:postgres 而不是 testcontainers：
+#   GitHub Actions hosted runner 已经跑在容器里，testcontainers 要在容器里再起容器
+#   （Docker-in-Docker）依赖 runner 开 privileged——不是一个稳定 CI 基座。直接用
+#   GHA services container（native 支持）把 PG 绑到 5432 端口，spec_store_test.go /
+#   spec_session_store_test.go 里的 `os.Getenv("TEST_DATABASE_URL")` 拿到 DSN 就跑。
+#
+# SKIP→RED 设计（Codex R4 红线）：
+#   如果 services.postgres 没起来或 TEST_DATABASE_URL 注入失败，上述两个测试文件
+#   会 `t.Skip()`，老版的 `make test-specdriven` 会把跳过当成绿——Sprint 1.2 在
+#   scripts/check_specdriven_coverage.sh 加了 SKIP→RED 检测，任何 --- SKIP: 都会
+#   让 job 红。不允许"被静默跳过"的 PG 集成测试混进绿色 CI。
+
+name: test-specdriven
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'internal/specdriven/**'
+      - 'internal/store/**'
+      - 'internal/master/**'
+      - 'scripts/check_specdriven_coverage.sh'
+      - 'scripts/sprint_gate.sh'
+      - 'Makefile'
+      - '.github/workflows/test-specdriven.yml'
+      - 'go.mod'
+      - 'go.sum'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-specdriven:
+    name: specdriven gate (race + coverage + SKIP→RED)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # PG 15 alpine — 跟生产一致的 minor（避免 TimestampTZ 精度/行为差异）。
+    # 用 health check 保证 job step 开跑前 PG 已 ready，不靠 sleep。
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: hive_ci
+          POSTGRES_USER: hive
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hive -d hive_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # spec_store_test.go / spec_session_store_test.go 直接 os.Getenv 读这个变量。
+      # 缺 → t.Skip → SKIP→RED → job 红（故意设计的反例验证）。
+      TEST_DATABASE_URL: "postgres://hive:ci@localhost:5432/hive_ci?sslmode=disable"
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup go
+        uses: actions/setup-go@v5
+        with:
+          # 对齐 go.mod 里的 go 1.25.0；pin 到 1.25.1 是为了规避 Go 1.25.0 某些
+          # patch 里 `covdata` 工具缺失的历史问题（Makefile 原注释有提及），
+          # -coverpkg 需要 covdata 链路稳定。
+          go-version: '1.25.1'
+          cache: true
+
+      - name: verify postgres ready
+        run: |
+          # services.postgres health check 已经确认健康，但 psql 连一次把 DSN
+          # 打到日志，排障时一眼看出是 auth 还是 network 问题。
+          for i in 1 2 3 4 5; do
+            if pg_isready -h localhost -p 5432 -U hive -d hive_ci; then
+              echo "postgres ready on attempt $i"
+              break
+            fi
+            echo "postgres not ready, retry $i/5"
+            sleep 2
+          done
+
+      - name: go mod download
+        run: go mod download
+
+      - name: go vet
+        run: go vet ./internal/specdriven/... ./internal/store/... ./internal/master/...
+
+      - name: make test-specdriven
+        # Makefile target 内部会：
+        #   1. go test -race -coverpkg=specdriven,store -coverprofile | tee testlog
+        #   2. bash scripts/check_specdriven_coverage.sh profile 75 testlog
+        # testlog 里任何 --- SKIP: 会让 script exit 1，整个 step 红。
+        run: make test-specdriven
+
+      - name: upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-specdriven
+          path: |
+            coverage-specdriven.out
+            coverage-specdriven.testlog
+          retention-days: 14
+
+      - name: summary
+        if: always()
+        run: |
+          {
+            echo "## specdriven gate result"
+            echo ""
+            echo "- Go version: $(go version)"
+            if [ -f coverage-specdriven.out ]; then
+              echo "- coverage profile: $(wc -l < coverage-specdriven.out) lines"
+              echo "- total: $(go tool cover -func=coverage-specdriven.out 2>/dev/null | awk '/^total:/ { print $NF }' || echo 'n/a')"
+            fi
+            if [ -f coverage-specdriven.testlog ]; then
+              skips=$(grep -c '^--- SKIP:' coverage-specdriven.testlog || true)
+              echo "- SKIP lines in testlog: $skips (any > 0 means SKIP→RED fired)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Sprint 3.1 (harden-spec-driven-phase2, task 12.15) — rollback drill
+  #
+  # 为什么加这个 job：
+  #   docs/运维手册/spec-driven-rollback.md 描述了 mode=legacy 总开关 + 5
+  #   道 guard 的逐项回退步骤。runbook 不跑就是死文档——P10 Sprint 3.1
+  #   要求把每条回退步骤映射到 anchor test，CI 物理 replay，锚点改名/
+  #   删除 → 本 job 红 → block merge。
+  #
+  # anchor 物理 kill 机制：
+  #   每个 guard step 跑 anchor test 写到 testlog，然后 shell grep
+  #   `=== RUN   <TestName>` + `--- PASS: <TestName>` 必须成对出现。
+  #   任何 anchor 被重命名/注释掉 → grep 失败 → step 红 → job 红。
+  #   SKIP→RED 同款：any `--- SKIP:` 也失败（防 TEST_DATABASE_URL 丢失）。
+  #
+  # 范围收敛（2026-04-19 tasks.md 顶层设计）：
+  #   Sprint 3.1 只覆盖 mode=legacy + Guard 1-4 anchor replay（Guard 5
+  #   Planner schema gate 的 TestDecode 在 Sprint 3.3 planner 包落地后自然
+  #   加入）。migration down.sql drill 归并到 Sprint 3.2（down.sql 还不
+  #   存在 — runbook §4 列为"不可回退项"，Sprint 3.2 补技术可逆性保险）。
+  rollback-drill:
+    name: rollback drill (runbook §0+§3 anchor replay)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: test-specdriven
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: hive_ci
+          POSTGRES_USER: hive
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hive -d hive_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      TEST_DATABASE_URL: "postgres://hive:ci@localhost:5432/hive_ci?sslmode=disable"
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.1'
+          cache: true
+
+      - name: verify postgres ready
+        run: |
+          for i in 1 2 3 4 5; do
+            if pg_isready -h localhost -p 5432 -U hive -d hive_ci; then
+              echo "postgres ready on attempt $i"
+              break
+            fi
+            echo "postgres not ready, retry $i/5"
+            sleep 2
+          done
+
+      - name: go mod download
+        run: go mod download
+
+      # ── Runbook §0 + Guard 2+3 (mode 开关) ──────────────────────────
+      # mode=legacy 是单飞行员回退总开关；这里 replay session_loop_specdriven
+      # 的 4 条 mode 分支 anchor（legacy short-circuit / invalid fail-closed /
+      # empty request short-circuit / default config is legacy）。
+      - name: "runbook §0 — mode=legacy short-circuit anchors"
+        run: |
+          log=drill-mode.testlog
+          go test -race -v ./internal/master/... \
+            -run 'TestApplySpecDrivenIntake_LegacyMode_ShortCircuits|TestApplySpecDrivenIntake_InvalidMode_FailsClosed|TestApplySpecDrivenIntake_EmptyRequest_ShortCircuits|TestApplySpecDrivenIntake_DefaultConfigIsLegacy' \
+            2>&1 | tee "$log"
+          bash scripts/assert_anchors_pass.sh "$log" \
+            TestApplySpecDrivenIntake_LegacyMode_ShortCircuits \
+            TestApplySpecDrivenIntake_InvalidMode_FailsClosed \
+            TestApplySpecDrivenIntake_EmptyRequest_ShortCircuits \
+            TestApplySpecDrivenIntake_DefaultConfigIsLegacy
+
+      # ── Guard 1: Continuation 默认 OFF ─────────────────────────────
+      # SpecDrivenConfig 默认 continuation.default="off"（FM-1 反坑不变量）。
+      - name: "runbook §3 Guard 1 — continuation default OFF"
+        run: |
+          log=drill-guard1.testlog
+          go test -race -v ./internal/master/... \
+            -run 'TestDefaultSpecDrivenConfig_SystemLevelInvariant' \
+            2>&1 | tee "$log"
+          bash scripts/assert_anchors_pass.sh "$log" \
+            TestDefaultSpecDrivenConfig_SystemLevelInvariant
+
+      # ── Guard 2: SpecChangeStore CAS ────────────────────────────────
+      # 6 条 CAS anchor 覆盖 create / 双 create conflict / 错 revision conflict /
+      # 不存在 update conflict / 并发 update / AppendEvent inverse。
+      - name: "runbook §3 Guard 2 — SpecChangeStore CAS"
+        run: |
+          log=drill-guard2.testlog
+          go test -race -v ./internal/store/... \
+            -run 'TestSpecStore_UpsertInitialCreate|TestSpecStore_DoubleCreateConflict|TestSpecStore_UpdateWrongRevisionConflict|TestSpecStore_UpdateNonExistentConflict|TestSpecStore_ConcurrentUpdate|TestSpecStore_AppendEvent_Inverse' \
+            2>&1 | tee "$log"
+          bash scripts/assert_anchors_pass.sh "$log" \
+            TestSpecStore_UpsertInitialCreate \
+            TestSpecStore_DoubleCreateConflict \
+            TestSpecStore_UpdateWrongRevisionConflict \
+            TestSpecStore_UpdateNonExistentConflict \
+            TestSpecStore_ConcurrentUpdate \
+            TestSpecStore_AppendEvent_Inverse
+
+      # ── Guard 3: SessionSpecState 持久化 ────────────────────────────
+      # SaveLoadRoundTrip / LoadMissing / SaveNormalizesOnWrite / Delete。
+      - name: "runbook §3 Guard 3 — SessionSpecState persistence"
+        run: |
+          log=drill-guard3.testlog
+          go test -race -v ./internal/store/... \
+            -run 'TestSpecSessionStateStore_SaveLoadRoundTrip|TestSpecSessionStateStore_LoadMissing|TestSpecSessionStateStore_SaveNormalizesOnWrite|TestSpecSessionStateStore_Delete' \
+            2>&1 | tee "$log"
+          bash scripts/assert_anchors_pass.sh "$log" \
+            TestSpecSessionStateStore_SaveLoadRoundTrip \
+            TestSpecSessionStateStore_LoadMissing \
+            TestSpecSessionStateStore_SaveNormalizesOnWrite \
+            TestSpecSessionStateStore_Delete
+
+      # ── Guard 4: specCtx atomic.Pointer OffLock ────────────────────
+      # runbook §3 Guard 4 硬性纪律：StoreSpecCtx 调用必须在 session.mu
+      # 之外（atomic.Pointer 并发语义要求）。纯源码锚点扫描，非 test。
+      - name: "runbook §3 Guard 4 — StoreSpecCtx OffLock discipline"
+        run: bash scripts/assert_storespecctx_offlock.sh
+
+      # ── Guard 5: Planner schema gate (Sprint 3.3 补齐后激活) ────────
+      - name: "runbook §3 Guard 5 — planner schema gate (pending Sprint 3.3)"
+        run: |
+          if [ -d internal/specdriven/planner ]; then
+            log=drill-guard5.testlog
+            go test -race -v ./internal/specdriven/planner/... -run 'TestDecode' \
+              2>&1 | tee "$log"
+            # anchor name 由 Sprint 3.3 落地后固化到本 step
+            grep -q '^--- PASS: TestDecode' "$log" || {
+              echo "Guard 5 anchor TestDecode expected to pass once planner lands" >&2
+              exit 1
+            }
+          else
+            echo "planner package not yet implemented — Guard 5 anchor wiring deferred to Sprint 3.3"
+          fi
+
+      # ── Sprint 3.2: migration down reversibility drill ──────────────
+      # runbook §4 列 3 张 spec 表为"不可回退项"——生产回退是 mode=legacy
+      # 短路（2μs，表休眠零开销），**不**调 DropSpecTables。本步骤证明
+      # "需要时可以 drop+recreate" 的技术保险：up→down→up 循环 schema
+      # 完整恢复 + sequence 从 1 复位，不被残留老数据串号。
+      # R1/R2/R3 蓝军已本地杀穿（删 table drop / 删 trigger+function drop /
+      # 去 IF NOT EXISTS 破 idempotency）——任何未来对 MigrateSpecTables /
+      # DropSpecTables 的 regression 会让本 anchor 红。
+      - name: "runbook §4 Sprint 3.2 — migration down.sql reversibility"
+        run: |
+          log=drill-migration.testlog
+          go test -race -v ./internal/store/... \
+            -run 'TestMigration_DownReverts' \
+            2>&1 | tee "$log"
+          bash scripts/assert_anchors_pass.sh "$log" \
+            TestMigration_DownReverts
+
+      # ── 最终：full test-specdriven 仍绿 ─────────────────────────────
+      # 前面 4 个 guard 单独绿还不够——整个 make test-specdriven（含覆盖率
+      # + SKIP→RED）仍必须绿，证明 rollback 路径不孤立、不破坏主 gate。
+      - name: "runbook §0 regression — make test-specdriven"
+        run: make test-specdriven
+
+      - name: upload drill testlogs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rollback-drill-testlogs
+          path: |
+            drill-*.testlog
+            coverage-specdriven.out
+            coverage-specdriven.testlog
+          retention-days: 14
+
+      - name: drill summary
+        if: always()
+        run: |
+          {
+            echo "## rollback-drill result"
+            echo ""
+            echo "| Guard | anchor testlog | passed |"
+            echo "|-------|----------------|--------|"
+            for f in drill-mode.testlog drill-guard1.testlog drill-guard2.testlog drill-guard3.testlog drill-guard5.testlog drill-migration.testlog; do
+              if [ -f "$f" ]; then
+                pass=$(grep -c '^--- PASS:' "$f" || true)
+                skip=$(grep -c '^--- SKIP:' "$f" || true)
+                echo "| $f | $pass PASS / $skip SKIP |"
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

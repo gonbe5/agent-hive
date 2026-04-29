@@ -1,0 +1,24 @@
+{
+  "name": "fm06_lock_reentrancy",
+  "user_id": "u-frank",
+  "session_state": {
+    "active_change_id": "c-render",
+    "focus_mru": ["c-render"],
+    "changes": {
+      "c-render": {
+        "id": "c-render",
+        "status": "active",
+        "last_task_key": "2.1",
+        "last_touched": "2026-04-18T13:00:00Z"
+      }
+    }
+  },
+  "input": "继续",
+  "want_continuation": {
+    "decision": "resume",
+    "change_id": "c-render"
+  },
+  "want_error": "lock reentrancy",
+  "required": true,
+  "notes": "FM-6: specCtx 读路径若在持 session.mu 的调用链里触发重入 → 死锁。atomic.Pointer 零锁读已防死锁，但 Runner 契约要求：若检测到 reentrant mutex 访问，必须显式返回 error 含 'lock reentrancy' 而不是静默死锁/panic。Sprint 2.1 反例化：naiveRunner 不做 reentrancy 检测 → nil error → runCaseOnce WantError 分支 'expected error got nil' FAIL。真实 runner 必须在 session.mu 被 hold 时 panic-free 地报 'lock reentrancy detected'。"
+}

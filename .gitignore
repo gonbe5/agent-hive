@@ -1,0 +1,46 @@
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output
+*.out
+
+# spec-driven CI 产物（testlog 不在 *.out 覆盖范围内，显式列出避免漏网）
+coverage-specdriven.*
+
+# Dependency dirs
+vendor/
+frontend/node_modules/
+# vite 直出到 internal/webui/dist/（供 Go //go:embed），非 hand-edited 源码
+internal/webui/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+
+.claude/
+/claw
+/server
+bin/.worktrees/
+.worktrees/
+~/.claw/
+config.json
+.gstack/
+docs/
+TODOs.md
+DESIGN.md
+CLAUDE.md
+AGENTS.md
+config.json

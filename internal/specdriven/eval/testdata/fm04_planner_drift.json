@@ -1,0 +1,23 @@
+{
+  "name": "fm04_planner_drift",
+  "user_id": "u-dave",
+  "session_state": {
+    "focus_mru": [],
+    "changes": {}
+  },
+  "input": "帮我把 tests 都跑一遍",
+  "want_continuation": {
+    "decision": "new"
+  },
+  "want_plan": {
+    "steps": [
+      {
+        "task_key": "1.1",
+        "tool_name": "bash",
+        "args": {"command": "go test ./...", "timeout": 30}
+      }
+    ]
+  },
+  "required": true,
+  "notes": "FM-4: planner 必须输出 task_key='1.1' string（禁止 1.1 float）。Sprint 2.2 反例化：naiveRunner 返回 Decision{resume,...} vs want.decision='new' → decision kind mismatch → FAIL（天然反例，依赖 WantContinuation.Decision 差异）。整数字段 `timeout: 30` 锁 Sprint 1.1 canonicalJSON 整数保真——equalPlan 经 canonical JSON 规范化后 {\"timeout\":30} 必须 byte-equal，不可退化为 30.0。另外 fakeRunner(echoWantError=true).Plan 拷贝 want_plan 保 tautology baseline 绿。"
+}

@@ -1,0 +1,172 @@
+# session-scope-regression-matrix Phase 4.3 — e2e CI harness
+#
+# 为什么需要这个 workflow：
+#   session-scope-regression-matrix 的三层保护（emit 源头正确 / grep 源码拦截 /
+#   WS filter 运行时兜底）必须有物理 CI 证据，不靠 reviewer 人工 sign-off。
+#   本 workflow 把 Phase 1 envelope invariant / Phase 2 penetration matrix /
+#   Phase 3 reconnect race + Phase 0 grep script + Phase 4 playwright hook
+#   拼成一个门。
+#
+# 硬约束（codex Round 4 要求）：
+#   (a) 零 FE .spec.ts 存在时 browser job MUST PASS（"no tests found" 视作成功）。
+#       frontend-ws-handshake-regression Phase 2 的 playwright spec 后续会落到
+#       frontend/playwright/，但在此 change 不 block 它们，只留接缝。
+#   (b) 严禁硬编码任何 FE spec 文件名——只能引用目录 glob
+#       frontend/playwright/**/*.spec.ts。
+#
+# timeout-minutes: TBD_FROM_BASELINE —— task 4.5 在 7 次 green run 后按 p95 × 1.5
+#   向上取整填入；在此之前保持占位字面量，防止因 timeout 过紧假红。
+
+name: e2e-session-scope
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'internal/master/**'
+      - 'internal/streaming/**'
+      - 'tests/regression/**'
+      - 'scripts/ci/check_session_scope.sh'
+      - 'frontend/playwright/**'
+      - '.github/workflows/e2e-session-scope.yml'
+      - 'go.mod'
+      - 'go.sum'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────
+  # lint: Phase 0 grep enforcement
+  # internal/master/*.go 中禁止出现无白名单注释的裸 Broadcast / 进度族 Generic。
+  lint:
+    name: session-scope lint (grep enforcement)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5  # TBD_FROM_BASELINE placeholder (lint 是秒级 job)
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: run check_session_scope.sh
+        run: bash scripts/ci/check_session_scope.sh
+
+  # ──────────────────────────────────────────────────────────────────────
+  # go-tests: Phase 1/2/3 regression tests under -race -count=1
+  go-tests:
+    name: go regression tests (envelope / matrix / reconnect race)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15  # TBD_FROM_BASELINE placeholder
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.1'
+          cache: true
+
+      - name: go mod download
+        run: go mod download
+
+      - name: run tests/regression (Phase 1/2/3)
+        run: |
+          set -euo pipefail
+          go test ./tests/regression/... -race -count=1 -v 2>&1 | tee regression.testlog
+          # SKIP→RED：禁止任何 --- SKIP: 混进绿色（见 test-specdriven.yml 同款设计）
+          if grep -q '^--- SKIP:' regression.testlog; then
+            echo "FAIL: tests/regression 里出现 --- SKIP:（禁止静默跳过）" >&2
+            grep '^--- SKIP:' regression.testlog >&2
+            exit 1
+          fi
+
+      - name: upload regression testlog
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-testlog
+          path: regression.testlog
+          retention-days: 14
+
+  # ──────────────────────────────────────────────────────────────────────
+  # browser: playwright 接缝（frontend-ws-handshake-regression Phase 2 的宿主）
+  # 硬约束：
+  #   (a) 零 .spec.ts 时 MUST PASS —— no-tests 不能让 workflow 红
+  #   (b) 不硬编码 spec 文件名，只用目录 glob
+  browser:
+    name: playwright (frontend/playwright/**/*.spec.ts)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15  # TBD_FROM_BASELINE placeholder
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: detect playwright specs
+        id: detect
+        run: |
+          # 只匹配目录，不硬编码 spec 文件名——约束 (b)
+          if [ -d frontend/playwright ] && find frontend/playwright -type f -name '*.spec.ts' | grep -q .; then
+            echo "has_specs=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_specs=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: install frontend deps
+        if: steps.detect.outputs.has_specs == 'true'
+        working-directory: frontend
+        run: npm ci
+
+      - name: install playwright browsers
+        if: steps.detect.outputs.has_specs == 'true'
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: run playwright (specs present)
+        if: steps.detect.outputs.has_specs == 'true'
+        working-directory: frontend
+        run: npx playwright test playwright/
+
+      - name: no-specs short-circuit
+        if: steps.detect.outputs.has_specs != 'true'
+        run: |
+          # 约束 (a)：零 spec → pass，不 fail workflow
+          echo "no playwright specs under frontend/playwright/**/*.spec.ts; passing as designed (delegated to frontend-ws-handshake-regression Phase 2)"
+
+  # ──────────────────────────────────────────────────────────────────────
+  # summary job：所有必须 green 的 job 都过才认为整个 workflow green
+  # task 5.3 要求 main 上连续 7 day green，靠这个 job 的聚合结果统计
+  summary:
+    name: session-scope harness summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    needs: [lint, go-tests, browser]
+    if: always()
+    steps:
+      - name: aggregate result
+        run: |
+          {
+            echo "## session-scope harness"
+            echo ""
+            echo "- lint:     ${{ needs.lint.result }}"
+            echo "- go-tests: ${{ needs.go-tests.result }}"
+            echo "- browser:  ${{ needs.browser.result }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # 三个 job 必须全 success；任何其他状态 → exit 1
+          if [ "${{ needs.lint.result }}" = "success" ] \
+             && [ "${{ needs.go-tests.result }}" = "success" ] \
+             && [ "${{ needs.browser.result }}" = "success" ]; then
+            echo "all jobs green"
+            exit 0
+          fi
+          echo "one or more jobs non-success" >&2
+          exit 1

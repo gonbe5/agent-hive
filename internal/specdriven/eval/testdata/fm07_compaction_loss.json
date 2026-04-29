@@ -1,0 +1,35 @@
+{
+  "name": "fm07_compaction_loss",
+  "user_id": "u-grace",
+  "session_state": {
+    "active_change_id": "c-main",
+    "focus_mru": ["c-main", "c-side", "c-exp"],
+    "changes": {
+      "c-main": {
+        "id": "c-main",
+        "status": "active",
+        "last_task_key": "5.0",
+        "last_touched": "2026-04-18T14:00:00Z"
+      },
+      "c-side": {
+        "id": "c-side",
+        "status": "active",
+        "last_task_key": "2.0",
+        "last_touched": "2026-04-17T14:00:00Z"
+      },
+      "c-exp": {
+        "id": "c-exp",
+        "status": "blocked",
+        "last_task_key": "1.1",
+        "last_touched": "2026-04-16T14:00:00Z"
+      }
+    }
+  },
+  "input": "看看那个 exp 阻塞在哪",
+  "want_continuation": {
+    "decision": "resume",
+    "change_id": "c-exp"
+  },
+  "required": true,
+  "notes": "FM-7: 进程重启后 session state 必须完整 rehydrate——active_change_id, focus_mru 顺序, changes map 全部保留。若 scalar ChangeID → c-side/c-exp 丢失 → 用户追问 exp 被错路由到 c-main。"
+}

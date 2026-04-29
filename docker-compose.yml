@@ -1,0 +1,139 @@
+##############################################################################
+# Hive — Docker Compose 部署
+#
+# 架构说明：
+#   hive      主服务（Go 二进制 + 内嵌前端），监听 8080
+#   postgres  PostgreSQL 16，存储运行时配置和会话数据
+#
+# Sandbox DooD（Docker outside of Docker）说明：
+#   Hive 通过 /var/run/docker.sock 与宿主机 Docker daemon 通信，
+#   在宿主机上创建 sandbox 容器（hive-sandbox:latest），
+#   而非在容器内运行嵌套 Docker daemon。
+#
+#   关键约束：sandbox bind mount 路径必须在宿主机和 Hive 容器内完全一致。
+#   本文件将宿主机 /opt/hive/workdir 挂载到容器相同路径，
+#   config.docker.json 中 sessions_dir 也指向该路径。
+#
+# 首次启动前：
+#   1. 构建 sandbox 镜像（宿主机上）：
+#        make build-sandbox-image
+#   2. 复制并修改配置：
+#        cp docker/config.docker.json config.json
+#        # 填入 LLM API Key 等运行时配置（也可通过 Web UI 配置）
+#   3. 创建宿主机 workdir：
+#        mkdir -p /opt/hive/workdir/sessions
+#   4. 设置环境变量或 .env 文件：
+#        echo "POSTGRES_PASSWORD=your_password" > .env
+#   5. 启动：
+#        docker compose up -d
+##############################################################################
+
+services:
+
+  # --------------------------------------------------------------------------
+  # Hive 主服务
+  # --------------------------------------------------------------------------
+  hive:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: hive:latest
+    container_name: hive
+    restart: unless-stopped
+    ports:
+      - "${HIVE_PORT:-8080}:8080"
+    environment:
+      # ── PostgreSQL 连接 ────────────────────────────────────────────
+      # 方式A：单个 DSN（优先）
+      # DATABASE_URL: postgres://claw:password@postgres:5432/claw?sslmode=disable
+      # 方式B：拆分字段
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: claw
+      POSTGRES_USER: claw
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}
+      POSTGRES_SSL_MODE: disable
+
+      # ── 会话 & 工具目录 ────────────────────────────────────────────
+      SESSIONS_DIR: /opt/hive/workdir/sessions
+      CUSTOM_TOOLS_DIR: /data/tools
+
+      # ── LLM 密钥（首次启动后写入数据库，后续可通过 Web UI 修改）──
+      CLAW_API_KEY: ${CLAW_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      # ── Docker socket（DooD 核心）──────────────────────────────────
+      # Hive 调用 docker CLI 管理 sandbox 容器，
+      # 所有 sandbox 容器运行在宿主机 Docker daemon 上。
+      - /var/run/docker.sock:/var/run/docker.sock
+
+      # ── 工作目录（sandbox bind mount 路径一致性）──────────────────
+      # ⚠️  重要：路径必须与 config.json sessions_dir 完全一致，
+      # 且与宿主机实际路径相同（Docker daemon 按宿主机路径解析 -v）。
+      # 如修改此路径，同步修改 config.docker.json sessions_dir。
+      - /opt/hive/workdir:/opt/hive/workdir
+
+      # ── 持久化数据（日志、自定义工具）────────────────────────────
+      - hive-logs:/data/logs
+      - hive-tools:/data/tools
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    # ⚠️  必须配置：Hive 以非 root 用户运行，需要访问 /var/run/docker.sock。
+    # 查询宿主机 docker.sock 的 gid：
+    #   stat -c '%g' /var/run/docker.sock
+    # 将输出的数字填入下方 group_add，否则启动后会报 permission denied。
+    group_add:
+      - "${DOCKER_GID:-999}"
+
+    networks:
+      - hive-net
+
+  # --------------------------------------------------------------------------
+  # PostgreSQL 数据库
+  # --------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: hive-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: claw
+      POSTGRES_USER: claw
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 或环境变量中设置 POSTGRES_PASSWORD}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U claw -d claw"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - hive-net
+    # 生产环境建议不暴露此端口，仅通过 hive-net 内部通信
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+
+# ------------------------------------------------------------------------------
+# 持久化卷
+# ------------------------------------------------------------------------------
+volumes:
+  postgres-data:
+    name: hive-postgres-data
+  hive-logs:
+    name: hive-logs
+  hive-tools:
+    name: hive-tools
+
+# ------------------------------------------------------------------------------
+# 内部网络
+# ------------------------------------------------------------------------------
+networks:
+  hive-net:
+    name: hive-net
+    driver: bridge

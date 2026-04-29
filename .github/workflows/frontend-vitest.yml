@@ -1,0 +1,71 @@
+# frontend-ws-handshake-regression (tasks §7) — frontend vitest CI gate
+#
+# 为什么需要这个 workflow：
+#   openspec change `frontend-ws-handshake-regression` 落地 5 条 vitest
+#   （R1 URL 拼接反射 / R2 partial→DOM / R3 handleDisconnected 不清零 /
+#    R4 AppShell 双源优先级 / R5 reconnect 可见性 + C6-C16 两阶段错误扫描）。
+#   本仓既有 `test-specdriven.yml` 只跑 Go，`e2e-session-scope.yml` 只跑
+#   Playwright——**无任何 workflow 跑 frontend vitest**。没有 CI 的 vitest
+#   等于没跑过，spec Req 2 的回归保护也没有真正生效。本 job 是五条 vitest
+#   的 required status check，任一红则 block merge。
+#
+# 范围（spec 明确）：
+#   - 不跑 Go 测试（由 test-specdriven 覆盖）
+#   - 不跑 Playwright e2e（由 e2e-session-scope 覆盖，且 WS e2e 延后到
+#     独立 change `frontend-ws-e2e-harness`）
+#   - 只负责 frontend/src 下所有 vitest（bun run test 全量）
+
+name: frontend-vitest
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - 'openspec/**'
+      - '.github/workflows/frontend-vitest.yml'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-vitest:
+    name: frontend vitest gate (R1-R5)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile
+
+      - name: bun run test
+        # 执行 frontend/src 下全部 vitest；R1-R5 五条回归保护测试
+        # （useWebSocketConnection.urlBuilding / partialMessageRendering /
+        #  useWebSocket.handleDisconnected / AppShell / useWebSocket.reconnect）
+        # 任一红则本 step 红 → 整个 job 红 → PR required check 失败。
+        run: bun run test
+
+      - name: summary
+        if: always()
+        run: |
+          {
+            echo "## frontend-vitest gate"
+            echo ""
+            echo "- bun version: $(bun --version)"
+            echo "- test scope: frontend/src/**/*.test.{ts,tsx}"
+            echo "- R1-R5 regression tests covered by full \`bun run test\`"
+          } >> "$GITHUB_STEP_SUMMARY"

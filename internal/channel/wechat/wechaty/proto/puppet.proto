@@ -1,0 +1,142 @@
+// Wechaty Puppet Service 精简 gRPC 定义
+// 参考: https://github.com/wechaty/grpc/blob/master/proto/wechaty/puppet.proto
+syntax = "proto3";
+
+package wechaty;
+
+option go_package = "github.com/chef-guo/agents-hive/internal/channel/wechat/wechaty/proto";
+
+// Puppet Wechaty gRPC Puppet 服务
+service Puppet {
+    // Start 启动 Puppet
+    rpc Start(StartRequest) returns (StartResponse);
+
+    // Stop 停止 Puppet
+    rpc Stop(StopRequest) returns (StopResponse);
+
+    // Logout 登出
+    rpc Logout(LogoutRequest) returns (LogoutResponse);
+
+    // Event 事件流（服务端流式 RPC）
+    rpc Event(EventRequest) returns (stream EventResponse);
+
+    // MessageSendText 发送文本消息
+    rpc MessageSendText(MessageSendTextRequest) returns (MessageSendTextResponse);
+
+    // MessagePayload 获取消息详情
+    rpc MessagePayload(MessagePayloadRequest) returns (MessagePayloadResponse);
+
+    // ContactPayload 获取联系人详情
+    rpc ContactPayload(ContactPayloadRequest) returns (ContactPayloadResponse);
+
+    // RoomPayload 获取群聊详情
+    rpc RoomPayload(RoomPayloadRequest) returns (RoomPayloadResponse);
+}
+
+// EventType 事件类型
+enum EventType {
+    EVENT_TYPE_UNSPECIFIED = 0;
+    EVENT_TYPE_HEARTBEAT   = 1;
+    EVENT_TYPE_LOGIN       = 2;
+    EVENT_TYPE_LOGOUT      = 3;
+    EVENT_TYPE_MESSAGE     = 4;
+    EVENT_TYPE_SCAN        = 5;
+    EVENT_TYPE_DONG        = 6;
+    EVENT_TYPE_ERROR       = 7;
+    EVENT_TYPE_FRIENDSHIP  = 8;
+    EVENT_TYPE_ROOM_INVITE = 9;
+    EVENT_TYPE_ROOM_JOIN   = 10;
+    EVENT_TYPE_ROOM_LEAVE  = 11;
+    EVENT_TYPE_ROOM_TOPIC  = 12;
+    EVENT_TYPE_READY       = 13;
+    EVENT_TYPE_RESET       = 14;
+}
+
+// MessageType 消息类型
+enum MessageType {
+    MESSAGE_TYPE_UNSPECIFIED = 0;
+    MESSAGE_TYPE_ATTACHMENT  = 1;
+    MESSAGE_TYPE_AUDIO       = 2;
+    MESSAGE_TYPE_CONTACT     = 3;
+    MESSAGE_TYPE_CHATHISTORY = 4;
+    MESSAGE_TYPE_EMOTICON    = 5;
+    MESSAGE_TYPE_IMAGE       = 6;
+    MESSAGE_TYPE_TEXT        = 7;
+    MESSAGE_TYPE_LOCATION    = 8;
+    MESSAGE_TYPE_MINI_PROGRAM = 9;
+    MESSAGE_TYPE_TRANSFER    = 10;
+    MESSAGE_TYPE_RED_ENVELOPE = 11;
+    MESSAGE_TYPE_RECALLED    = 12;
+    MESSAGE_TYPE_URL         = 13;
+    MESSAGE_TYPE_VIDEO       = 14;
+}
+
+// Start/Stop
+message StartRequest {}
+message StartResponse {}
+message StopRequest {}
+message StopResponse {}
+
+// Logout
+message LogoutRequest {}
+message LogoutResponse {}
+
+// Event
+message EventRequest {}
+
+message EventResponse {
+    EventType type    = 1;
+    string    payload = 2;  // JSON 编码的事件数据
+}
+
+// MessageSendText
+message MessageSendTextRequest {
+    string conversation_id = 1;
+    string text            = 2;
+    repeated string mention_id_list = 3;
+}
+
+message MessageSendTextResponse {
+    string id = 1;  // 消息 ID（可选）
+}
+
+// MessagePayload
+message MessagePayloadRequest {
+    string id = 1;
+}
+
+message MessagePayloadResponse {
+    string      id              = 1;
+    string      contact_id      = 2;    // 发送者 ID
+    string      room_id         = 3;    // 群聊 ID（私聊为空）
+    MessageType type            = 4;
+    string      text            = 5;
+    uint64      timestamp       = 6;
+    string      filename        = 7;
+    repeated string mention_id_list = 8;
+}
+
+// ContactPayload
+message ContactPayloadRequest {
+    string id = 1;
+}
+
+message ContactPayloadResponse {
+    string id     = 1;
+    string name   = 2;
+    string alias  = 3;
+    string avatar = 4;
+}
+
+// RoomPayload
+message RoomPayloadRequest {
+    string id = 1;
+}
+
+message RoomPayloadResponse {
+    string id                  = 1;
+    string topic               = 2;
+    repeated string member_id_list = 3;
+    string owner_id            = 4;
+    string avatar              = 5;
+}

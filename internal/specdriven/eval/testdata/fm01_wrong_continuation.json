@@ -1,0 +1,31 @@
+{
+  "name": "fm01_wrong_continuation",
+  "user_id": "u-alice",
+  "session_state": {
+    "active_change_id": "c-auth-rework",
+    "focus_mru": ["c-auth-rework", "c-billing-fix"],
+    "changes": {
+      "c-auth-rework": {
+        "id": "c-auth-rework",
+        "status": "active",
+        "title": "Rewrite auth middleware",
+        "last_task_key": "3.2",
+        "last_touched": "2026-04-17T10:00:00Z"
+      },
+      "c-billing-fix": {
+        "id": "c-billing-fix",
+        "status": "active",
+        "title": "Fix billing idempotency",
+        "last_task_key": "1.1",
+        "last_touched": "2026-04-16T09:00:00Z"
+      }
+    }
+  },
+  "input": "继续做 billing 那个",
+  "want_continuation": {
+    "decision": "resume",
+    "change_id": "c-billing-fix"
+  },
+  "required": true,
+  "notes": "用户显式 mention billing — resolver 必须切到 c-billing-fix 而非默认的 active c-auth-rework。若回退到 active → FM-1 错续写。"
+}

@@ -1,0 +1,25 @@
+{
+  "name": "fm02_cas_conflict",
+  "user_id": "u-bob",
+  "session_state": {
+    "active_change_id": "c-payments",
+    "focus_mru": ["c-payments"],
+    "changes": {
+      "c-payments": {
+        "id": "c-payments",
+        "status": "active",
+        "last_task_key": "2.3",
+        "last_touched": "2026-04-18T08:00:00Z"
+      }
+    }
+  },
+  "input": "标记 2.3 完成",
+  "want_continuation": {
+    "decision": "resume",
+    "change_id": "c-payments"
+  },
+  "concurrent_write": true,
+  "want_error": "CAS conflict",
+  "required": true,
+  "notes": "FM-2: 并发写同一 change。Runner 应模拟 CAS 冲突，读回后重试，最终若依然冲突必须 error 回调者（不能静默 merge）。Sprint 2.2 反例化：naiveRunner 不模拟 CAS，直接返回 Decision{resume, c-payments} + nil err → runCaseOnce 在 WantError='CAS conflict' 下进入 `expected error containing` 分支 → FAIL ✅。ConcurrentWrite=true 是 task 1.14 字段，供 real runner 后续消费。"
+}

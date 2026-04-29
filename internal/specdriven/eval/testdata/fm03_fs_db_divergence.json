@@ -1,0 +1,28 @@
+{
+  "name": "fm03_fs_db_divergence",
+  "user_id": "u-carol",
+  "session_state": {
+    "active_change_id": "c-migrate",
+    "focus_mru": ["c-migrate"],
+    "changes": {
+      "c-migrate": {
+        "id": "c-migrate",
+        "status": "active",
+        "last_task_key": "4.1",
+        "last_touched": "2026-04-18T11:00:00Z"
+      }
+    }
+  },
+  "input": "读一下 tasks.md 看到哪了",
+  "want_continuation": {
+    "decision": "resume",
+    "change_id": "c-migrate"
+  },
+  "store_state": {
+    "revision": 7,
+    "exported_revision": 5
+  },
+  "want_error": "FS/DB divergence",
+  "required": true,
+  "notes": "FM-3: FS export exported_revision=5 < store.revision=7 → reader 必须 fail-closed 或 reload，不能静默信任 stale FS artifact。Sprint 2.1 反例化：Runner 必须在 StoreState.Revision > ExportedRevision 时返回 error 含 'FS/DB divergence'——naiveRunner 不做该检查故必 FAIL。原 want_fallback 移除：fallback 分支由 TestRunCaseOnce_ErrorPaths 的 fallback_happy/error 覆盖，fm03 聚焦 divergence detection。"
+}

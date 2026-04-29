@@ -1,0 +1,146 @@
+# Phase 0 飞书渠道护栏 CI workflow
+#
+# 为什么需要这个 workflow：
+#   docs/渠道对接/feishu-bot/ROADMAP.md Phase 0 明文列了 6 条 CI gate，但此前
+#   仅 check_session_scope.sh 被 e2e-session-scope.yml 调用，另 5 条脚本属于
+#   "存在但不运行"的孤儿状态——PR 合入时不会自动拦截。本 workflow 把它们全
+#   部 wire 上，兑现 Phase 0 "14 项合并结论 + CI 6 条 gate 全过"的验收承诺。
+#
+# 覆盖 ROADMAP 条目对照：
+#   check_imctx_leaf.sh               → Phase 0 #1  (imctx 叶子包)
+#   check_feishu_phantom_symbols.sh   → Phase 0 #3  (删除 WithStatusChangeHandler/isEncrypted)
+#   check_session_id_unique_entry.sh  → Phase 0 #10 (session_id 唯一入口 BuildSessionID)
+#   check_pii_safe_sender.sh          → Phase 0 #12 (PII SafeSenderID)
+#   check_no_fail_open.sh             → Phase 0 #13 (禁 FailOpenOnDedupError)
+#   check_webhook_handler_nil_err.sh  → Phase 0 #7  (webhook handler 永返 nil)
+#
+# 约束：
+#   - 所有 gate 本地跑都必须 ALL_PASS，不允许任何脚本静默 skip。
+#   - paths 触发范围覆盖 internal/ cmd/ migrations/ 与 scripts/ci/ 自身，确保
+#     脚本本身被改动时也会跑一次回归。
+
+name: phase0-feishu-gates
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'internal/**'
+      - 'cmd/**'
+      - 'migrations/**'
+      - 'scripts/ci/check_imctx_leaf.sh'
+      - 'scripts/ci/check_feishu_phantom_symbols.sh'
+      - 'scripts/ci/check_session_id_unique_entry.sh'
+      - 'scripts/ci/check_pii_safe_sender.sh'
+      - 'scripts/ci/check_no_fail_open.sh'
+      - 'scripts/ci/check_webhook_handler_nil_err.sh'
+      - '.github/workflows/phase0-gates.yml'
+      - 'go.mod'
+      - 'go.sum'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  imctx-leaf:
+    name: gate#1 imctx 叶子包零反向依赖
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.1'
+          cache: true
+      - name: run check_imctx_leaf.sh
+        run: bash scripts/ci/check_imctx_leaf.sh
+
+  phantom-symbols:
+    name: gate#3 禁用 phantom Feishu SDK 符号
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/ci/check_feishu_phantom_symbols.sh
+
+  session-id-entry:
+    name: gate#10 session_id 唯一入口 BuildSessionID
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/ci/check_session_id_unique_entry.sh
+
+  pii-safe-sender:
+    name: gate#12 PII SafeSenderID 强制路径
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/ci/check_pii_safe_sender.sh
+
+  no-fail-open:
+    name: gate#13 禁 dedup fail-open 配置字段
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/ci/check_no_fail_open.sh
+
+  webhook-handler-nil-err:
+    name: gate#7 webhook handler 永返 nil
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/ci/check_webhook_handler_nil_err.sh
+
+  feishu-sdk-only:
+    name: gate#sdk 飞书 SDK-only 红线
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/ci/check_feishu_sdk_only.sh
+
+  summary:
+    name: phase0-gates summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    needs:
+      - imctx-leaf
+      - phantom-symbols
+      - session-id-entry
+      - pii-safe-sender
+      - no-fail-open
+      - webhook-handler-nil-err
+      - feishu-sdk-only
+    if: always()
+    steps:
+      - name: aggregate result
+        run: |
+          {
+            echo "## phase0-feishu-gates"
+            echo ""
+            echo "- imctx-leaf:              ${{ needs.imctx-leaf.result }}"
+            echo "- phantom-symbols:         ${{ needs.phantom-symbols.result }}"
+            echo "- session-id-entry:        ${{ needs.session-id-entry.result }}"
+            echo "- pii-safe-sender:         ${{ needs.pii-safe-sender.result }}"
+            echo "- no-fail-open:            ${{ needs.no-fail-open.result }}"
+            echo "- webhook-handler-nil-err: ${{ needs.webhook-handler-nil-err.result }}"
+            echo "- feishu-sdk-only:         ${{ needs.feishu-sdk-only.result }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ needs.imctx-leaf.result }}" = "success" ] \
+             && [ "${{ needs.phantom-symbols.result }}" = "success" ] \
+             && [ "${{ needs.session-id-entry.result }}" = "success" ] \
+             && [ "${{ needs.pii-safe-sender.result }}" = "success" ] \
+             && [ "${{ needs.no-fail-open.result }}" = "success" ] \
+             && [ "${{ needs.webhook-handler-nil-err.result }}" = "success" ]; then
+            echo "all phase 0 gates green"
+            exit 0
+          fi
+          echo "one or more phase 0 gates non-success" >&2
+          exit 1

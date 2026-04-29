@@ -1,0 +1,812 @@
+@import "tailwindcss";
+
+/* Tailwind v4: 使用 .dark 类切换暗色模式（而非 prefers-color-scheme） */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ===== shadcn token alias → 品牌调色盘 =====
+ * Tailwind v4 要求 token 在 @theme 中声明，工具类才会生成。
+ * `inline` 模式让 Tailwind 直接用 var() 引用运行时变量——下方 :root / .dark
+ * 块切换时，shadcn 工具类（bg-primary / text-muted-foreground 等）随之切换。
+ * chat-ui-migrate-ai-elements Phase 0 Day 1：vendored ai-elements 依赖这些 token。
+ * 副产品：修复 30 个既存文件里 140 处沉默失败的 shadcn 工具类。 */
+@theme inline {
+  --color-background: var(--bg-primary);
+  --color-foreground: var(--text-primary);
+  --color-card: var(--bg-card);
+  --color-card-foreground: var(--text-primary);
+  --color-popover: var(--bg-card);
+  --color-popover-foreground: var(--text-primary);
+  --color-primary: var(--accent-600);
+  --color-primary-foreground: #ffffff;
+  --color-secondary: var(--bg-secondary);
+  --color-secondary-foreground: var(--text-primary);
+  --color-muted: var(--bg-secondary);
+  --color-muted-foreground: var(--text-secondary);
+  --color-accent: var(--accent-100);
+  --color-accent-foreground: var(--accent-700);
+  --color-destructive: var(--danger);
+  --color-destructive-foreground: #ffffff;
+  --color-border: var(--border-color);
+  --color-input: var(--border-color);
+  --color-ring: var(--accent-500);
+}
+
+/* ===== CSS 语义化变量 ===== */
+:root {
+  --bg-primary: #F4F7FB;
+  --bg-card: #ffffff;
+  --bg-secondary: rgba(0, 0, 0, 0.05);
+  --text-primary: #1C1C1E;
+  --text-secondary: #6C6C70;
+  --border-color: rgba(0, 0, 0, 0.07);
+  --bg-hover: rgba(0, 0, 0, 0.04);
+  --gradient-start: #60A5FA;
+  --gradient-mid: #3B82F6;
+  --gradient-end: #2563EB;
+  --accent: #2563EB;
+  --accent-hover: #1D4ED8;
+  --accent-light: #DBEAFE;
+  --accent-subtle: rgba(59, 130, 246, 0.08);
+  --accent-border: rgba(59, 130, 246, 0.2);
+  /* 显式 stops（与 DESIGN.md 对齐） */
+  --accent-50: #EFF6FF;
+  --accent-100: #DBEAFE;
+  --accent-300: #93C5FD;
+  --accent-500: #3B82F6;
+  --accent-600: #2563EB;
+  --accent-700: #1D4ED8;
+  /* 语义色：与品牌色解耦 */
+  --danger: #DC2626;
+  --success: #059669;
+  --warning: #D97706;
+  --scrollbar-thumb: rgba(156, 163, 175, 0.4);
+  --scrollbar-thumb-hover: rgba(107, 114, 128, 0.5);
+  --card-tool-border: rgba(59, 130, 246, 0.35);
+  --card-tool-bg: rgba(239, 246, 255, 0.6);
+  --card-tool-bg-expanded: rgba(219, 234, 254, 0.8);
+  --card-error-border: rgba(239, 68, 68, 0.4);
+  --card-error-bg: rgba(254, 242, 242, 0.7);
+  --card-error-bg-expanded: rgba(254, 242, 242, 0.9);
+  /* AI 消息卡片 */
+  --ai-card-bg: #ffffff;
+  --ai-card-border: rgba(0, 0, 0, 0.06);
+  --ai-card-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 4px 12px rgba(0, 0, 0, 0.04);
+  /* 卡片通用阴影 */
+  --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 4px 12px rgba(0, 0, 0, 0.04);
+  /* 圆角 */
+  --radius-card: 16px;
+  --radius-btn: 10px;
+  --radius-input: 10px;
+  --radius-badge: 9999px;
+}
+
+.dark {
+  --bg-primary: #1C1C1E;
+  --bg-card: #2C2C2E;
+  --bg-secondary: rgba(255, 255, 255, 0.06);
+  --text-primary: #F2F2F7;
+  --text-secondary: #8E8E93;
+  --border-color: rgba(255, 255, 255, 0.08);
+  --bg-hover: rgba(255, 255, 255, 0.06);
+  --gradient-start: #93C5FD;
+  --gradient-mid: #60A5FA;
+  --gradient-end: #3B82F6;
+  --accent: #60A5FA;
+  --accent-hover: #3B82F6;
+  --accent-light: rgba(59, 130, 246, 0.15);
+  --accent-subtle: rgba(59, 130, 246, 0.08);
+  --accent-border: rgba(59, 130, 246, 0.25);
+  /* 显式 stops（dark） */
+  --accent-50: rgba(59, 130, 246, 0.1);
+  --accent-100: rgba(59, 130, 246, 0.15);
+  --accent-300: #93C5FD;
+  --accent-500: #60A5FA;
+  --accent-600: #60A5FA;
+  --accent-700: #3B82F6;
+  /* 语义色（dark） */
+  --danger: #EF4444;
+  --success: #10B981;
+  --warning: #FBBF24;
+  --scrollbar-thumb: rgba(63, 63, 70, 0.6);
+  --scrollbar-thumb-hover: rgba(82, 82, 91, 0.7);
+  --card-tool-border: rgba(96, 165, 250, 0.25);
+  --card-tool-bg: rgba(30, 58, 138, 0.12);
+  --card-tool-bg-expanded: rgba(30, 58, 138, 0.18);
+  --card-error-border: rgba(239, 68, 68, 0.3);
+  --card-error-bg: rgba(127, 29, 29, 0.15);
+  --card-error-bg-expanded: rgba(127, 29, 29, 0.2);
+  /* AI 消息卡片 */
+  --ai-card-bg: #2C2C2E;
+  --ai-card-border: rgba(255, 255, 255, 0.08);
+  --ai-card-shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.15);
+  /* 卡片通用阴影 */
+  --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.15);
+  /* 圆角 */
+  --radius-card: 16px;
+  --radius-btn: 10px;
+  --radius-input: 10px;
+  --radius-badge: 9999px;
+}
+
+/* ===== Body 渐变（light only, non-fixed for iOS Safari R8） ===== */
+body {
+  background-image: linear-gradient(180deg, #F8FAFF 0%, #F2F5FC 100%);
+  /* NOTE: 不使用 background-attachment: fixed；iOS Safari 16+ 已知 viewport / 100vh / scroll 抖动 */
+}
+.dark body {
+  background-image: none;
+}
+
+/* ===== 全局基础样式 ===== */
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Light 模式 */
+html {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+/* Dark 模式 */
+html.dark {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+/* Mono 字体 */
+.font-mono {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+/* ===== 渐变文字工具类 ===== */
+.text-gradient {
+  background: linear-gradient(135deg, var(--gradient-start), var(--gradient-mid), var(--gradient-end));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ===== 消息入场动画 ===== */
+@keyframes msg-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.msg-container {
+  animation: msg-enter 0.25s ease-out;
+}
+
+/* ===== 自定义滚动条 ===== */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* ===== Markdown prose 样式 ===== */
+.prose {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.prose pre {
+  position: relative;
+  background: var(--bg-secondary) !important;
+  border: 1px solid var(--border-color) !important;
+  border-radius: 12px;
+  padding: 0 !important;
+  overflow: auto !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+}
+html.dark .prose pre {
+  background: rgba(0, 0, 0, 0.3) !important;
+  border: 1px solid var(--border-color) !important;
+}
+
+/* 代码块头部（语言标签 + 操作按钮） */
+.code-block-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 12px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  font-size: 11px;
+  font-family: 'DM Sans', system-ui, sans-serif;
+  color: var(--text-secondary);
+}
+html.dark .code-block-header {
+  background: var(--bg-secondary);
+  border-bottom-color: var(--border-color);
+}
+
+/* 代码块头部按钮 */
+.code-header-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.code-header-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* 代码块深色主题覆盖 */
+.code-block-dark-override {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-color) !important;
+}
+.code-block-dark-override .code-block-header {
+  background: var(--bg-primary);
+  border-bottom-color: var(--border-color);
+  color: var(--text-secondary);
+}
+.code-block-dark-override code {
+  color: var(--text-primary) !important;
+}
+
+.code-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.code-copy-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.code-copy-btn.copied {
+  color: #10b981;
+}
+
+.prose pre code {
+  display: block;
+  padding: 16px;
+  overflow-x: auto;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+html.dark .prose pre code {
+  color: var(--text-primary);
+}
+
+.prose code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8em;
+}
+
+/* 内联代码样式：pill 形状
+ * 作用域限定在 `.message-content`（聊天消息正文），避免泄漏到
+ * Canvas MarkdownRenderer / Guide 等同样使用 `.prose` 的区域。
+ * 代码块内部（`pre code`）通过 `:not(pre code)` 排除，保持深色主题不受影响。 */
+.message-content code:not(pre code) {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--accent-subtle);
+  border: 1px solid transparent;
+  color: var(--accent-700);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.9em;
+  font-weight: 500;
+}
+html.dark .message-content code:not(pre code) {
+  background: var(--accent-subtle);
+  border-color: transparent;
+  color: var(--accent-300);
+}
+
+/* 聊天消息正文的标题层级 — 作用域限定在 `.message-content`，
+ * 不污染其它 `.prose` 用例（settings / docs viewer / 工具结果内嵌 Markdown）。
+ * 尺度对齐 design.md D5：h1 mt-10/mb-5、h2 mt-8/mb-4/scroll-mt-16、h3 mt-6/mb-3。
+ * 首子归零避免消息顶端出现大块空白。 */
+.message-content h1 {
+  font-size: 1.5rem; /* text-2xl */
+  line-height: 2rem;
+  font-weight: 700;
+  margin-top: 2.5rem;    /* mt-10 */
+  margin-bottom: 1.25rem;/* mb-5 */
+}
+.message-content h2 {
+  font-size: 1.25rem; /* text-xl */
+  line-height: 1.75rem;
+  font-weight: 600;
+  margin-top: 2rem;   /* mt-8 */
+  margin-bottom: 1rem;/* mb-4 */
+  scroll-margin-top: 4rem; /* scroll-mt-16 */
+}
+.message-content h3 {
+  font-size: 1.125rem; /* text-lg */
+  line-height: 1.75rem;
+  font-weight: 600;
+  margin-top: 1.5rem;   /* mt-6 */
+  margin-bottom: 0.75rem;/* mb-3 */
+}
+.message-content > :first-child,
+.message-content h1:first-child,
+.message-content h2:first-child,
+.message-content h3:first-child {
+  margin-top: 0;
+}
+
+/* 链接样式 */
+.prose a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.15s;
+}
+.prose a:hover {
+  border-bottom-color: var(--accent);
+}
+html.dark .prose a {
+  color: var(--accent);
+}
+html.dark .prose a:hover {
+  border-bottom-color: var(--accent);
+}
+
+/* 引用块：苹果风格 — 细左边框 + 极淡背景 */
+.prose blockquote {
+  border-left: 2px solid var(--border-color);
+  background: var(--bg-secondary);
+  padding: 12px 16px;
+  border-radius: 0 10px 10px 0;
+  margin-left: 0;
+  margin-right: 0;
+}
+.prose blockquote p {
+  color: var(--text-secondary);
+}
+html.dark .prose blockquote {
+  border-left-color: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* 表格：圆角 + 交替行色 + hover */
+.prose table {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: 100%;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.prose th, .prose td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-color);
+  text-align: left;
+}
+.prose th {
+  background: var(--bg-secondary);
+  font-weight: 600;
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-secondary);
+}
+.prose tbody tr:last-child td {
+  border-bottom: none;
+}
+.prose tbody tr:nth-child(even) {
+  background: var(--bg-secondary);
+}
+.prose tbody tr:hover {
+  background: var(--bg-hover);
+}
+
+/* 分隔线 */
+.prose hr {
+  border: none;
+  height: 1px;
+  background: linear-gradient(to right, transparent, var(--border-color), transparent);
+  margin: 24px 0;
+}
+
+/* 标题样式 */
+.prose h1, .prose h2 {
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-color);
+}
+.prose h3, .prose h4, .prose h5, .prose h6 {
+  margin-top: 1.2em;
+}
+
+/* 列表间距 */
+.prose ul, .prose ol {
+  padding-left: 1.5em;
+}
+.prose li + li {
+  margin-top: 0.25em;
+}
+
+/* ===== 消息操作栏过渡动画 =====
+ * 底层逻辑：纯 opacity:0 不折叠布局——ActionBtn (p-1.5 + 14px icon = ~28px)
+ * 加 flex 容器的 mt-1 (4px)，合计 ~32px 隐形占位，把消息间距顶开。
+ * 抓手：max-height 随 hover 展开，unhover 折叠到 0，和 .msg-timestamp 一套路。 */
+.msg-actions {
+  opacity: 0;
+  max-height: 0;
+  overflow: hidden;
+  margin-top: 0 !important;
+  transform: translateY(4px);
+  transition: opacity 0.15s ease, max-height 0.15s ease, margin-top 0.15s ease, transform 0.15s ease;
+  pointer-events: none;
+}
+.msg-container:hover .msg-actions {
+  opacity: 1;
+  max-height: 40px;
+  margin-top: 0.25rem !important;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+/* 移动端触摸设备：始终显示操作栏 */
+@media (hover: none) and (pointer: coarse) {
+  .msg-actions {
+    opacity: 1;
+    max-height: 40px;
+    margin-top: 0.25rem !important;
+    transform: translateY(0);
+    pointer-events: auto;
+  }
+}
+
+/* ===== 操作按钮 tooltip ===== */
+.action-btn {
+  position: relative;
+  overflow: visible !important;
+}
+.action-tooltip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%) scale(0.9);
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--text-primary);
+  color: var(--bg-primary);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s, transform 0.15s;
+  z-index: 50;
+}
+.action-btn:hover > .action-tooltip {
+  opacity: 1;
+  transform: translateX(-50%) scale(1);
+}
+
+/* ===== 时间戳 tooltip ===== */
+.msg-timestamp {
+  opacity: 0;
+  max-height: 0;
+  overflow: hidden;
+  transition: opacity 0.15s ease, max-height 0.15s ease;
+}
+.msg-container:hover .msg-timestamp {
+  opacity: 1;
+  max-height: 20px;
+}
+@media (hover: none) and (pointer: coarse) {
+  .msg-timestamp {
+    opacity: 0.6;
+    max-height: 20px;
+  }
+}
+
+/* ===== 输入框光晕效果 ===== */
+.chat-input-glow:focus-within {
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.15);
+  border-color: rgba(37, 99, 235, 0.3);
+}
+html.dark .chat-input-glow:focus-within {
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.2);
+  border-color: rgba(59, 130, 246, 0.3);
+}
+
+/* ===== 思考脉冲动画 ===== */
+@keyframes thinking-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.thinking-pulse {
+  animation: thinking-pulse 2s ease-in-out infinite;
+}
+
+/* ===== 思考动画 ===== */
+@keyframes thinking-bounce {
+  0%, 80%, 100% {
+    transform: scale(0.6);
+    opacity: 0.4;
+  }
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.thinking-dot {
+  animation: thinking-bounce 1.4s infinite ease-in-out both;
+}
+.thinking-dot:nth-child(1) { animation-delay: 0s; }
+.thinking-dot:nth-child(2) { animation-delay: 0.16s; }
+.thinking-dot:nth-child(3) { animation-delay: 0.32s; }
+
+/* ===== Toast 动画 ===== */
+@keyframes slide-in-right {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-in-right {
+  animation: slide-in-right 0.3s ease-out;
+}
+
+/* ===== Canvas 面板 ===== */
+@keyframes canvas-slide-in {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+.canvas-panel {
+  animation: canvas-slide-in 0.25s ease-out;
+}
+
+/* Canvas iframe 样式 */
+.canvas-iframe {
+  border: none;
+  width: 100%;
+  height: 100%;
+  background: var(--bg-card);
+}
+html.dark .canvas-iframe {
+  background: var(--bg-card);
+}
+
+/* JSON 树样式 */
+.json-tree-key { color: var(--text-primary); font-weight: 600; }
+.json-tree-string { color: #22863a; }
+.json-tree-number { color: #005cc5; }
+.json-tree-boolean { color: #d73a49; }
+.json-tree-null { color: #6a737d; font-style: italic; }
+html.dark .json-tree-string { color: #98c379; }
+html.dark .json-tree-number { color: #d19a66; }
+html.dark .json-tree-boolean { color: #e06c75; }
+html.dark .json-tree-null { color: #5c6370; }
+
+/* ===== 任务进度面板 ===== */
+.task-progress-panel {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-card);
+  padding: 12px 16px;
+}
+html:not(.dark) .task-progress-panel {
+  background: rgba(0, 0, 0, 0.02);
+}
+html.dark .task-progress-panel {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* 运行中图标脉冲动画 */
+.task-running-icon {
+  animation: thinking-pulse 2s ease-in-out infinite;
+}
+
+/* ===== AI 消息卡片 ===== */
+.ai-message-card {
+  background: var(--ai-card-bg);
+  border: 1px solid var(--ai-card-border);
+  border-radius: var(--radius-card);
+  padding: 16px 20px;
+  box-shadow: var(--ai-card-shadow);
+  max-width: 100%;
+}
+@media (max-width: 768px) {
+  .ai-message-card {
+    padding: 12px 14px;
+    border-radius: 14px;
+  }
+}
+/* 卡片内 prose 间距统一化 */
+.ai-message-card .prose > *:first-child { margin-top: 0; }
+.ai-message-card .prose > *:last-child { margin-bottom: 0; }
+.ai-message-card .prose p { margin-top: 0.75em; margin-bottom: 0.75em; }
+.ai-message-card .prose h1,
+.ai-message-card .prose h2,
+.ai-message-card .prose h3,
+.ai-message-card .prose h4,
+.ai-message-card .prose h5,
+.ai-message-card .prose h6 { margin-top: 1.25em; margin-bottom: 0.5em; }
+.ai-message-card .prose ul,
+.ai-message-card .prose ol { margin-top: 0.5em; margin-bottom: 0.5em; }
+.ai-message-card .prose blockquote { margin-top: 0.75em; margin-bottom: 0.75em; }
+.ai-message-card .prose hr { margin-top: 1.25em; margin-bottom: 1.25em; }
+.ai-message-card .prose pre { margin-top: 0.75em; margin-bottom: 0.75em; }
+
+/* 工具结果卡片（tool role 消息）*/
+.tool-result-card {
+  border: 1px solid var(--card-tool-border);
+  border-radius: var(--radius-card);
+  background: var(--card-tool-bg);
+  overflow: hidden;
+}
+
+/* Token 用量 */
+.token-usage {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  padding: 2px 8px;
+  border-radius: 9999px;
+  border: 1px solid var(--border-color);
+}
+
+/* 进度条渐变 */
+.task-progress-bar {
+  background: linear-gradient(90deg, var(--gradient-start), var(--gradient-mid), var(--gradient-end));
+}
+
+/* ===== 苹果风格：Sidebar + Header 毛玻璃 ===== */
+.apple-sidebar {
+  background: rgba(255, 255, 255, 0.72) !important;
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+}
+html.dark .apple-sidebar {
+  background: rgba(28, 28, 30, 0.72) !important;
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+}
+.apple-header {
+  background: rgba(255, 255, 255, 0.72) !important;
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+}
+html.dark .apple-header {
+  background: rgba(28, 28, 30, 0.72) !important;
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+}
+
+/* ===== 苹果风格：按钮 ===== */
+.apple-btn-primary {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-btn);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  transition: background 0.15s, transform 0.1s;
+}
+.apple-btn-primary:hover {
+  background: var(--accent-hover);
+}
+.apple-btn-primary:active {
+  transform: scale(0.97);
+}
+
+/* ===== 苹果风格：输入框 ===== */
+.apple-input {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-input);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.apple-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+
+/* ===== 苹果风格：卡片 ===== */
+.apple-card {
+  background: var(--bg-card);
+  border-radius: var(--radius-card);
+  box-shadow: var(--card-shadow);
+  border: 1px solid var(--border-color);
+}
+html.dark .apple-card {
+  box-shadow: var(--card-shadow);
+}
+
+/* ===== 苹果风格：分组列表（类 iOS Settings） ===== */
+.apple-list-group {
+  background: var(--bg-card);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+.apple-list-item {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color);
+  transition: background 0.1s;
+}
+.apple-list-item:last-child {
+  border-bottom: none;
+}
+.apple-list-item:hover {
+  background: var(--bg-hover);
+}
+
+/* ===== 苹果风格：字体层级 ===== */
+.font-display {
+  font-family: 'Geist', -apple-system, BlinkMacSystemFont, sans-serif;
+  letter-spacing: -0.02em;
+}
+.text-title-lg {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+}
+.text-title-md {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+}
+.text-label {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+/* ===== 苹果风格：chat 输入框光晕改为 amber ===== */
+.chat-input-glow:focus-within {
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+  border-color: var(--accent-border);
+}
+html.dark .chat-input-glow:focus-within {
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+  border-color: var(--accent-border);
+}
