@@ -61,6 +61,16 @@ func TestCostSummaryZeroValue(t *testing.T) {
 	assert.Empty(t, s.ByModel)
 }
 
+func TestQualityCostSummaryZeroValue(t *testing.T) {
+	s := &QualityCostSummary{}
+	assert.Empty(t, s.ByTaskType)
+	assert.Empty(t, s.ByQualityCase)
+	assert.Empty(t, s.ByPromptVersion)
+	assert.Empty(t, s.ByFailureType)
+	assert.Empty(t, s.ByFinalStatus)
+	assert.Empty(t, s.TopQualityCases)
+}
+
 // 验证 PgTracker 实现了 CostTracker 接口
 var _ CostTracker = (*PgTracker)(nil)
 
@@ -91,6 +101,10 @@ func (m *mockCostTracker) Cleanup(_ context.Context, _ int) (int64, error) {
 }
 func (m *mockCostTracker) GetCostByUser(_ context.Context) ([]UserCost, error) {
 	return nil, nil
+}
+
+func (m *mockCostTracker) GetQualityCost(_ context.Context) (*QualityCostSummary, error) {
+	return &QualityCostSummary{}, nil
 }
 
 func (m *mockCostTracker) recorded() []UsageEntry {
@@ -196,6 +210,28 @@ func TestRecordUsage_UserIDPropagated(t *testing.T) {
 	assert.Equal(t, "user-42", entries[0].UserID, "userID must be propagated to UsageEntry")
 }
 
+func TestRecordUsageWithMeta_QualityFieldsPropagated(t *testing.T) {
+	mock := &mockCostTracker{}
+	rec := NewAsyncRecorder(mock, zap.NewNop())
+
+	rec.RecordUsageWithMeta("sess-quality", "user-42", "unknown-model-xyz", llm.Usage{PromptTokens: 10, CompletionTokens: 5}, UsageMeta{
+		TaskType:      "react",
+		QualityCaseID: "aq01",
+		PromptVersion: "system/base@db@sha256:abc",
+		FailureType:   "tool",
+		FinalStatus:   "fail",
+	})
+	rec.Stop()
+
+	entries := mock.recorded()
+	assert.Len(t, entries, 1)
+	assert.Equal(t, "react", entries[0].TaskType)
+	assert.Equal(t, "aq01", entries[0].QualityCaseID)
+	assert.Equal(t, "system/base@db@sha256:abc", entries[0].PromptVersion)
+	assert.Equal(t, "tool", entries[0].FailureType)
+	assert.Equal(t, "fail", entries[0].FinalStatus)
+}
+
 func TestRecordUsage_KnownModelCalcsCost(t *testing.T) {
 	mock := &mockCostTracker{}
 	rec := NewAsyncRecorder(mock, zap.NewNop())
@@ -243,4 +279,8 @@ func (b *blockingCostTracker) Cleanup(_ context.Context, _ int) (int64, error) {
 }
 func (b *blockingCostTracker) GetCostByUser(_ context.Context) ([]UserCost, error) {
 	return nil, nil
+}
+
+func (b *blockingCostTracker) GetQualityCost(_ context.Context) (*QualityCostSummary, error) {
+	return &QualityCostSummary{}, nil
 }

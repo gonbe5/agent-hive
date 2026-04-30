@@ -23,11 +23,11 @@ const asyncRecorderBufSize = 256
 // 调用方只需调用 Submit，不阻塞。ch 满时丢弃并记录 Warn（背压保护）。
 // Stop 会等待 worker 处理完 ch 中所有已入队条目后再返回，确保 shutdown 不丢数据。
 type AsyncRecorder struct {
-	inner     CostTracker
-	logger    *zap.Logger
-	ch        chan UsageEntry
-	done      chan struct{}
-	closed    atomic.Bool // Stop() 后置 true，防止 Submit panic
+	inner      CostTracker
+	logger     *zap.Logger
+	ch         chan UsageEntry
+	done       chan struct{}
+	closed     atomic.Bool      // Stop() 后置 true，防止 Submit panic
 	authEngine QuotaIncrementer // Phase 5B: 配额累加器（可选，nil 时跳过）
 }
 
@@ -70,10 +70,7 @@ func (r *AsyncRecorder) Submit(entry UsageEntry) {
 	}
 }
 
-// RecordUsage 根据模型查询定价、计算成本并异步提交用量记录。
-// 封装了 GetModelMeta → CalcCost → Submit 的重复逻辑。
-// Phase 5: userID 参数用于配额累加。
-func (r *AsyncRecorder) RecordUsage(sessionID, userID, model string, usage llm.Usage) {
+func (r *AsyncRecorder) RecordUsageWithMeta(sessionID, userID, model string, usage llm.Usage, meta UsageMeta) {
 	if usage.PromptTokens == 0 && usage.CompletionTokens == 0 {
 		return
 	}
@@ -89,7 +86,19 @@ func (r *AsyncRecorder) RecordUsage(sessionID, userID, model string, usage llm.U
 		PromptTokens:     usage.PromptTokens,
 		CompletionTokens: usage.CompletionTokens,
 		CostUSD:          costUSD,
+		TaskType:         meta.TaskType,
+		QualityCaseID:    meta.QualityCaseID,
+		PromptVersion:    meta.PromptVersion,
+		FailureType:      meta.FailureType,
+		FinalStatus:      meta.FinalStatus,
 	})
+}
+
+// RecordUsage 根据模型查询定价、计算成本并异步提交用量记录。
+// 封装了 GetModelMeta → CalcCost → Submit 的重复逻辑。
+// Phase 5: userID 参数用于配额累加。
+func (r *AsyncRecorder) RecordUsage(sessionID, userID, model string, usage llm.Usage) {
+	r.RecordUsageWithMeta(sessionID, userID, model, usage, UsageMeta{})
 }
 
 // Stop 关闭入队通道，等待 worker 处理完所有已入队条目后返回。
@@ -149,6 +158,11 @@ func (r *AsyncRecorder) Cleanup(ctx context.Context, retentionDays int) (int64, 
 // GetCostByUser 代理到 inner。
 func (r *AsyncRecorder) GetCostByUser(ctx context.Context) ([]UserCost, error) {
 	return r.inner.GetCostByUser(ctx)
+}
+
+// GetQualityCost 代理到 inner。
+func (r *AsyncRecorder) GetQualityCost(ctx context.Context) (*QualityCostSummary, error) {
+	return r.inner.GetQualityCost(ctx)
 }
 
 // 编译期接口合规检查

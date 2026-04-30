@@ -67,6 +67,42 @@ func TestPromptLoader_HardcodedDefault(t *testing.T) {
 	}
 }
 
+func TestPromptLoader_LoadWithMeta_Default(t *testing.T) {
+	l := NewPromptLoader(nil, "", "zh-CN", nopLogger())
+	got := l.LoadWithMeta("missing/key")
+
+	if got.Content != "" {
+		t.Fatalf("expected empty content, got %q", got.Content)
+	}
+	if got.Meta.Key != "missing/key" {
+		t.Fatalf("key = %q, want missing/key", got.Meta.Key)
+	}
+	if got.Meta.Source != "default" {
+		t.Fatalf("source = %q, want default", got.Meta.Source)
+	}
+	if got.Meta.Language != "zh-CN" {
+		t.Fatalf("language = %q, want zh-CN", got.Meta.Language)
+	}
+	if got.Meta.Hash != "sha256:e3b0c44298fc1c14" {
+		t.Fatalf("hash = %q, want empty-content hash", got.Meta.Hash)
+	}
+}
+
+func TestPromptLoader_LoadWithMetaOrDefault_Hardcoded(t *testing.T) {
+	l := NewPromptLoader(nil, "", "zh-CN", nopLogger())
+	got := l.LoadWithMetaOrDefault("nonexistent/key", "fallback prompt")
+
+	if got.Content != "fallback prompt" {
+		t.Fatalf("content = %q, want fallback prompt", got.Content)
+	}
+	if got.Meta.Source != "hardcoded" {
+		t.Fatalf("source = %q, want hardcoded", got.Meta.Source)
+	}
+	if got.Meta.Hash != "sha256:53b68f2b0e7d8170" {
+		t.Fatalf("hash = %q, want fallback prompt hash", got.Meta.Hash)
+	}
+}
+
 // TestPromptLoader_DBLayer_Hit DB 层命中时返回 DB 内容
 func TestPromptLoader_DBLayer_Hit(t *testing.T) {
 	store := newMockStore()

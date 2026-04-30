@@ -749,6 +749,19 @@ func LoadAllConfigFromDB(db store.Store, cfg *config.Config, logger *zap.Logger)
 	cfgParseString(allCfg, "acp_server.auth_method", &cfg.ACPServer.AuthMethod)
 	cfgParseInt(allCfg, "acp_server.max_sessions", &cfg.ACPServer.MaxSessions)
 
+	// Runtime Policy
+	cfgParseDuration(allCfg, "runtime_policy.llm_call_timeout", &cfg.RuntimePolicy.LLMCallTimeout)
+	cfgParseDuration(allCfg, "runtime_policy.tool_timeout", &cfg.RuntimePolicy.ToolTimeout)
+	cfgParseDuration(allCfg, "runtime_policy.task_timeout", &cfg.RuntimePolicy.TaskTimeout)
+	cfgParseDuration(allCfg, "runtime_policy.spawn_agent_timeout", &cfg.RuntimePolicy.SpawnAgentTimeout)
+	cfgParseDuration(allCfg, "runtime_policy.acp_prompt_timeout", &cfg.RuntimePolicy.ACPPromptTimeout)
+	cfgParseDuration(allCfg, "runtime_policy.acp_reconnect_timeout", &cfg.RuntimePolicy.ACPReconnectTimeout)
+	cfgParseInt(allCfg, "runtime_policy.subagent_max_turns", &cfg.RuntimePolicy.SubagentMaxTurns)
+	cfgParseInt(allCfg, "runtime_policy.subagent_max_depth", &cfg.RuntimePolicy.SubagentMaxDepth)
+	cfgParseInt(allCfg, "runtime_policy.per_session_parallel", &cfg.RuntimePolicy.PerSessionParallel)
+	cfgParseInt(allCfg, "runtime_policy.global_workers", &cfg.RuntimePolicy.GlobalWorkers)
+	cfgParseFloat64(allCfg, "runtime_policy.max_session_cost_usd", &cfg.RuntimePolicy.MaxSessionCostUSD)
+
 	// LSP
 	cfgParseBool(allCfg, "lsp.enabled", &cfg.LSP.Enabled)
 	cfgParseDuration(allCfg, "lsp.timeout", &cfg.LSP.Timeout)

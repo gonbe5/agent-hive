@@ -5,13 +5,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
-	"io"
 	"unicode/utf8"
 
 	"go.uber.org/zap"
@@ -188,10 +188,11 @@ func RegisterBuiltinTools(host *mcphost.Host, logger *zap.Logger, cfg *config.Co
 	registerBrowserInteract(host, logger)
 	registerBatch(host, logger)
 	registerApplyPatch(host, logger)
+	registerToolSearch(host, logger)
 	registerCreateTool(host, logger, customToolsDir, cfg, globalApprovalBridge)
 	registerRemoveTool(host, logger, customToolsDir)
 
-	count := 15
+	count := 16
 
 	// 如果启用 LSP 且提供了配置，注册 LSP 工具
 	if cfg != nil && cfg.LSP.Enabled {
@@ -229,7 +230,18 @@ func RegisterBuiltinTools(host *mcphost.Host, logger *zap.Logger, cfg *config.Co
 
 	// 如果提供了 taskExecutor，注册 task 和 parallel_dispatch 工具
 	if taskExecutor != nil {
-		registerTask(host, taskExecutor, logger)
+		var delegationObserver DelegationObserver
+		if o, ok := taskExecutor.(DelegationObserver); ok {
+			delegationObserver = o
+		}
+		taskTimeout := time.Duration(0)
+		spawnTimeout := time.Duration(0)
+		if cfg != nil {
+			taskTimeout = cfg.RuntimePolicy.TaskTimeout
+			spawnTimeout = cfg.RuntimePolicy.SpawnAgentTimeout
+		}
+
+		registerTask(host, taskExecutor, logger, delegationObserver, taskTimeout)
 		count++
 
 		// 尝试将 taskExecutor 转换为 ParallelDispatchBroadcaster（Master 实现了此接口）
@@ -237,15 +249,15 @@ func RegisterBuiltinTools(host *mcphost.Host, logger *zap.Logger, cfg *config.Co
 		if b, ok := taskExecutor.(ParallelDispatchBroadcaster); ok {
 			broadcaster = b
 		}
-		registerParallelDispatch(host, taskExecutor, broadcaster, logger)
+		registerParallelDispatch(host, taskExecutor, broadcaster, logger, delegationObserver)
 		count++
-	}
 
-	// 如果提供了 agentSpawner，注册 spawn_agent 工具
-	if len(agentSpawnerI) > 0 && agentSpawnerI[0] != nil && taskExecutor != nil {
-		if spawner, ok := agentSpawnerI[0].(AgentSpawner); ok {
-			registerSpawnAgent(host, taskExecutor, spawner, logger)
-			count++
+		// 如果提供了 agentSpawner，注册 spawn_agent 工具
+		if len(agentSpawnerI) > 0 && agentSpawnerI[0] != nil {
+			if spawner, ok := agentSpawnerI[0].(AgentSpawner); ok {
+				registerSpawnAgent(host, taskExecutor, spawner, logger, delegationObserver, spawnTimeout)
+				count++
+			}
 		}
 	}
 
@@ -319,7 +331,7 @@ func RegisterQuestionTool(host *mcphost.Host, logger *zap.Logger, bridge Questio
 
 // RegisterTaskTool 单独注册 task 工具（需要 TaskExecutor）
 func RegisterTaskTool(host *mcphost.Host, logger *zap.Logger, executor TaskExecutor) {
-	registerTask(host, executor, logger)
+	registerTask(host, executor, logger, nil, 0)
 	logger.Info("task 工具已注册")
 }
 
@@ -354,10 +366,10 @@ func registerReadFile(host *mcphost.Host, logger *zap.Logger, tracker *ReadTrack
 
 	host.RegisterTool(
 		mcphost.ToolDefinition{
-			Name:                 "read_file",
-			Description: "Read the contents of a file from disk. This is the primary tool for inspecting file content before editing, searching, or making decisions.\n\n**When to use**: Inspect any text file to understand its structure, content, or current state. Always read a file before editing it with the edit tool. Read files to understand the codebase, check existing implementations, verify test expectations, or gather context for writing new code.\n\n**Parameters**:\n- `path`: Absolute path to the file. Required.\n- `offset` (optional): Line number to start reading from (0-indexed). Use this to skip to a specific section of a large file.\n- `limit` (optional): Maximum number of lines to read. Use to avoid reading entire large files.\n- `show_line_numbers` (optional): When true, each line is prefixed with its line number in the format 'line│content'. This is the format expected by the edit tool for locating edits by line number. Recommended: always set this to true when reading code files.\n\n**Safety constraints**:\n- Device files (e.g., /dev/zero, /dev/random) are blocked to prevent system access.\n- Binary files are detected by both extension (.so, .a, .png, .jpg, .exe, etc.) and content inspection (non-printable character ratio > 30% in first 4KB). Binary files return an error rather than content.\n- Files larger than 50KB are truncated and a warning is returned. Use offset and limit parameters to read large files in sections.\n- Empty files return an empty result with a note.\n- UTF-16 LE BOM is automatically detected and content is decoded correctly.\n- PDF, image, and binary files return an error message explaining they cannot be read as text.\n\n**Relationship to other tools**:\n- Must be called before edit on any file (read-before-edit enforcement).\n- Use grep to search within files without reading the entire file.\n- Use glob to find files by name pattern before reading them.\n- Use write_file to create new files or overwrite entirely.\n\n**Output format**: Returns the file content as plain text. If show_line_numbers is true, lines are prefixed with 'line│' where line is the 1-based line number. Error responses include a descriptive message explaining the failure reason.",
-			InputSchema:     schema,
-			Core:           true,
+			Name:              "read_file",
+			Description:       "Read the contents of a file from disk. This is the primary tool for inspecting file content before editing, searching, or making decisions.\n\n**When to use**: Inspect any text file to understand its structure, content, or current state. Always read a file before editing it with the edit tool. Read files to understand the codebase, check existing implementations, verify test expectations, or gather context for writing new code.\n\n**Parameters**:\n- `path`: Absolute path to the file. Required.\n- `offset` (optional): Line number to start reading from (0-indexed). Use this to skip to a specific section of a large file.\n- `limit` (optional): Maximum number of lines to read. Use to avoid reading entire large files.\n- `show_line_numbers` (optional): When true, each line is prefixed with its line number in the format 'line│content'. This is the format expected by the edit tool for locating edits by line number. Recommended: always set this to true when reading code files.\n\n**Safety constraints**:\n- Device files (e.g., /dev/zero, /dev/random) are blocked to prevent system access.\n- Binary files are detected by both extension (.so, .a, .png, .jpg, .exe, etc.) and content inspection (non-printable character ratio > 30% in first 4KB). Binary files return an error rather than content.\n- Files larger than 50KB are truncated and a warning is returned. Use offset and limit parameters to read large files in sections.\n- Empty files return an empty result with a note.\n- UTF-16 LE BOM is automatically detected and content is decoded correctly.\n- PDF, image, and binary files return an error message explaining they cannot be read as text.\n\n**Relationship to other tools**:\n- Must be called before edit on any file (read-before-edit enforcement).\n- Use grep to search within files without reading the entire file.\n- Use glob to find files by name pattern before reading them.\n- Use write_file to create new files or overwrite entirely.\n\n**Output format**: Returns the file content as plain text. If show_line_numbers is true, lines are prefixed with 'line│' where line is the 1-based line number. Error responses include a descriptive message explaining the failure reason.",
+			InputSchema:       schema,
+			Core:              true,
 			IsConcurrencySafe: true, // 只读无副作用，可并发执行
 		},
 		func(ctx context.Context, input json.RawMessage) (*mcphost.ToolResult, error) {
@@ -609,10 +621,10 @@ func registerGlob(host *mcphost.Host, logger *zap.Logger) {
 
 	host.RegisterTool(
 		mcphost.ToolDefinition{
-			Name:                 "glob",
-			Description: "Find files by glob pattern matching. Use this to locate files by name or extension patterns before reading or editing them.\n\n**When to use**: Find all files matching a naming pattern (e.g., all .go files, all test files, all files in a specific directory). Locate files you want to read or modify. Discover the structure of a codebase.\n\n**Parameters**:\n- `pattern`: Glob pattern to match file names against. Examples: '*.go' (all Go files), '**/*.ts' (all TypeScript files recursively), 'src/**/*.js' (JS files in src directory). The ** pattern matches zero or more directories. Required.\n- `path` (optional): Base directory to search from. Defaults to the current working directory.\n\n**Relationship to other tools**:\n- Use glob to find files, then use read_file to read them.\n- Use grep to search inside file contents.\n- If you need to find files by content rather than name, use grep instead.\n\n**Safety constraints**:\n- Results are limited to 100 files by default to prevent excessive output.\n- Use more specific patterns to narrow down results.\n\n**Output format**: Returns a list of matching file paths, one per line. Error responses explain why the search failed.",
-			InputSchema:      schema,
-			Core:             true,
+			Name:              "glob",
+			Description:       "Find files by glob pattern matching. Use this to locate files by name or extension patterns before reading or editing them.\n\n**When to use**: Find all files matching a naming pattern (e.g., all .go files, all test files, all files in a specific directory). Locate files you want to read or modify. Discover the structure of a codebase.\n\n**Parameters**:\n- `pattern`: Glob pattern to match file names against. Examples: '*.go' (all Go files), '**/*.ts' (all TypeScript files recursively), 'src/**/*.js' (JS files in src directory). The ** pattern matches zero or more directories. Required.\n- `path` (optional): Base directory to search from. Defaults to the current working directory.\n\n**Relationship to other tools**:\n- Use glob to find files, then use read_file to read them.\n- Use grep to search inside file contents.\n- If you need to find files by content rather than name, use grep instead.\n\n**Safety constraints**:\n- Results are limited to 100 files by default to prevent excessive output.\n- Use more specific patterns to narrow down results.\n\n**Output format**: Returns a list of matching file paths, one per line. Error responses explain why the search failed.",
+			InputSchema:       schema,
+			Core:              true,
 			IsConcurrencySafe: true, // 只读无副作用，可并发执行
 		},
 		func(ctx context.Context, input json.RawMessage) (*mcphost.ToolResult, error) {
@@ -681,10 +693,10 @@ func registerGrep(host *mcphost.Host, logger *zap.Logger) {
 
 	host.RegisterTool(
 		mcphost.ToolDefinition{
-			Name:                 "grep",
-			Description: "Search for text patterns within files using regular expressions. Use this to find where a function is defined, where a variable is used, or any text content across one or more files.\n\n**When to use**: Find occurrences of a string, identifier, function name, or pattern across multiple files. Locate all places where a specific feature is implemented. Search for TODO comments, error messages, or debug statements.\n\n**Parameters**:\n- `pattern`: Regular expression to search for. Supports full regex syntax including character classes ([a-z]), quantifiers (*, +, ?), anchors (^, $), and alternation (|). Required.\n- `path` (optional): Directory or file path to search in. Defaults to the current working directory.\n- `output_mode` (optional): Format of the output. 'content' (default) shows matching lines with context. 'files' shows only file names containing matches. 'count' shows only the count per file.\n- `head_limit` (optional): Maximum number of matching lines to return across all files. Defaults to 250. Use this to avoid overwhelming output on large codebases.\n- `file_type` (optional): Filter by file type/extension. Example: 'go', 'ts', 'py'.\n- `max_results` (optional): Maximum number of matches per file. 0 means unlimited. Default is 0.\n- `context` (optional): Number of lines of surrounding context to include for each match.\n- `multiline` (optional): When true, allows ^ and $ to match at start/end of each line within a multiline string. Default is false.\n\n**Relationship to other tools**:\n- Use grep to find content, then use read_file or edit to work with those files.\n- Use glob to find files by name first, then grep within those results.\n- Use grep instead of read_file when you only need to find where something appears, not the full file content.\n\n**Safety constraints**:\n- Paths are validated against directory traversal attacks.\n- Binary files are automatically excluded.\n\n**Output format**: Returns matching lines with the file path and line number prefix. Format depends on output_mode. Error responses explain search failures.",
-			InputSchema:      schema,
-			Core:             true,
+			Name:              "grep",
+			Description:       "Search for text patterns within files using regular expressions. Use this to find where a function is defined, where a variable is used, or any text content across one or more files.\n\n**When to use**: Find occurrences of a string, identifier, function name, or pattern across multiple files. Locate all places where a specific feature is implemented. Search for TODO comments, error messages, or debug statements.\n\n**Parameters**:\n- `pattern`: Regular expression to search for. Supports full regex syntax including character classes ([a-z]), quantifiers (*, +, ?), anchors (^, $), and alternation (|). Required.\n- `path` (optional): Directory or file path to search in. Defaults to the current working directory.\n- `output_mode` (optional): Format of the output. 'content' (default) shows matching lines with context. 'files' shows only file names containing matches. 'count' shows only the count per file.\n- `head_limit` (optional): Maximum number of matching lines to return across all files. Defaults to 250. Use this to avoid overwhelming output on large codebases.\n- `file_type` (optional): Filter by file type/extension. Example: 'go', 'ts', 'py'.\n- `max_results` (optional): Maximum number of matches per file. 0 means unlimited. Default is 0.\n- `context` (optional): Number of lines of surrounding context to include for each match.\n- `multiline` (optional): When true, allows ^ and $ to match at start/end of each line within a multiline string. Default is false.\n\n**Relationship to other tools**:\n- Use grep to find content, then use read_file or edit to work with those files.\n- Use glob to find files by name first, then grep within those results.\n- Use grep instead of read_file when you only need to find where something appears, not the full file content.\n\n**Safety constraints**:\n- Paths are validated against directory traversal attacks.\n- Binary files are automatically excluded.\n\n**Output format**: Returns matching lines with the file path and line number prefix. Format depends on output_mode. Error responses explain search failures.",
+			InputSchema:       schema,
+			Core:              true,
 			IsConcurrencySafe: true, // 只读无副作用，可并发执行
 		},
 		func(ctx context.Context, input json.RawMessage) (*mcphost.ToolResult, error) {
@@ -839,7 +851,6 @@ func registerBash(host *mcphost.Host, logger *zap.Logger, pool *ShellPool) {
 		},
 	)
 }
-
 
 // --- edit ---
 
@@ -1206,7 +1217,6 @@ func detectBinaryFile(path string) (bool, string) {
 
 	return false, mimeType
 }
-
 
 // applyToolDefinitionHooks 对所有已注册工具触发 ToolDefinition hook
 // 允许插件修改工具的描述和参数 schema

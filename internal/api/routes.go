@@ -91,6 +91,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("GET /api/v1/admin/usage/summary", adminOnly(s.handleUsageSummary))
 		mux.HandleFunc("GET /api/v1/admin/usage/by-user", adminOnly(s.handleUsageByUser))
 		mux.HandleFunc("GET /api/v1/admin/usage/by-model", adminOnly(s.handleUsageByModel))
+		mux.HandleFunc("GET /api/v1/admin/usage/quality", adminOnly(s.handleUsageQuality))
 
 		// Provider 管理
 		mux.HandleFunc("GET /api/v1/admin/auth/providers", adminOnly(s.handleAdminListProviders))
@@ -122,6 +123,17 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("POST /api/v1/admin/llm/models", adminOnly(s.handleAdminCreateLLMModel))
 		mux.HandleFunc("PATCH /api/v1/admin/llm/models/{name}", adminOnly(s.handleAdminUpdateLLMModel))
 		mux.HandleFunc("DELETE /api/v1/admin/llm/models/{name}", adminOnly(s.handleAdminDeleteLLMModel))
+
+		// Agent Quality 候选用例池
+		mux.HandleFunc("GET /api/v1/admin/quality/cases", adminOnly(s.handleAdminQualityListCases))
+		mux.HandleFunc("POST /api/v1/admin/quality/prompt-smoke", adminOnly(s.handleAdminQualityPromptSmoke))
+		mux.HandleFunc("GET /api/v1/admin/quality/candidates", adminOnly(s.handleAdminQualityListCandidates))
+		mux.HandleFunc("POST /api/v1/admin/quality/candidates", adminOnly(s.handleAdminQualityCreateCandidate))
+		mux.HandleFunc("PATCH /api/v1/admin/quality/candidates/{id}", adminOnly(s.handleAdminQualityUpdateCandidate))
+		mux.HandleFunc("GET /api/v1/admin/quality/candidates/{id}/golden-case", adminOnly(s.handleAdminQualityExportCandidate))
+
+		// Runtime Policy 只读查看
+		mux.HandleFunc("GET /api/v1/admin/runtime/policy", adminOnly(s.handleAdminRuntimePolicy))
 	}
 
 	// 图片临时文件服务（Gemini inlineData 生成的图片，通过 /api/images/<filename> 访问）

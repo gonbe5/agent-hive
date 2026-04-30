@@ -23,7 +23,11 @@ export function ReplayControls() {
     switch (e.key) {
       case ' ':
         e.preventDefault();
-        isPlaying ? pause() : play();
+        if (isPlaying) {
+          pause();
+        } else {
+          play();
+        }
         break;
       case 'ArrowLeft':
         e.preventDefault();

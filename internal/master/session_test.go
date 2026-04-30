@@ -9,12 +9,52 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/chef-guo/agents-hive/internal/llm"
+	"github.com/chef-guo/agents-hive/internal/memory"
 )
 
 // setupTestMaster 使用 deadlock_test.go 中的统一实现
 // 为保持接口兼容，这里提供一个简化的包装函数
 func setupTestMasterSimple(t *testing.T) *Master {
 	return setupTestMaster(t, nil)
+}
+
+func TestQualityMemoryInjectionConsumedOnce(t *testing.T) {
+	session := &SessionState{ID: "s1"}
+	session.SetQualityMemoryInjection(memory.InjectionResult{
+		Text:            "## 相关记忆\n\n- [user] 可信记忆\n",
+		Memories:        []memory.InjectedMemory{{ID: 11, Type: memory.MemoryTypeUser}},
+		EstimatedTokens: 9,
+	})
+
+	first := session.ConsumeQualityMemoryInjection()
+	second := session.ConsumeQualityMemoryInjection()
+
+	require.Len(t, first.Memories, 1)
+	assert.Equal(t, int64(11), first.Memories[0].ID)
+	assert.Empty(t, second.Memories)
+	assert.Empty(t, second.Text)
+}
+
+func TestContaminationStatus(t *testing.T) {
+	assert.Equal(t, "none", contaminationStatus(memory.InjectionResult{}))
+	assert.Equal(t, "clean", contaminationStatus(memory.InjectionResult{
+		Memories: []memory.InjectedMemory{{ID: 1, Type: memory.MemoryTypeUser}},
+	}))
+	assert.Equal(t, "filtered", contaminationStatus(memory.InjectionResult{SkippedExpired: 1}))
+	assert.Equal(t, "filtered", contaminationStatus(memory.InjectionResult{SkippedLowTrust: 1}))
+	assert.Equal(t, "filtered", contaminationStatus(memory.InjectionResult{SkippedCrossUser: 1}))
+}
+
+func TestShouldRecordMemoryInjectionIncludesFilteredOnly(t *testing.T) {
+	assert.False(t, shouldRecordMemoryInjection(memory.InjectionResult{}))
+	assert.True(t, shouldRecordMemoryInjection(memory.InjectionResult{
+		Text:     "## 相关记忆\n",
+		Memories: []memory.InjectedMemory{{ID: 1, Type: memory.MemoryTypeUser}},
+	}))
+	assert.True(t, shouldRecordMemoryInjection(memory.InjectionResult{
+		SkippedExpired:   1,
+		SkippedMemoryIDs: []int64{2},
+	}))
 }
 
 // TestSessionLoop_ExitCommand 测试退出命令

@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Zap, Plus, Pencil, Trash2, X, Save, RotateCcw } from 'lucide-react';
 import { useNodeClient } from '../hooks/useNodeClient';
@@ -128,7 +128,7 @@ export function Skills() {
   const [deleting, setDeleting] = useState<string | null>(null);
   const loadRef = useRef(0);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const seq = ++loadRef.current;
     setLoading(true);
     setError(null);
@@ -144,9 +144,9 @@ export function Skills() {
     } finally {
       if (seq === loadRef.current) setLoading(false);
     }
-  };
+  }, [client, addToast, t]);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [load]);
 
   const openNew = () => setModalSkill(null);
 

@@ -23,10 +23,10 @@ type StreamingExecutor struct {
 	mu          sync.Mutex
 	toolDef     map[string]*mcphost.ToolDefinition
 	executor    ToolExecutorFunc
-	pending     []*TrackedTool       // 正在执行 + 排队中
-	ordered     *OrderedBuffer       // 有序缓冲
-	unsafeCount int                  // 正在执行的不安全工具数
-	unsafeQueue []*TrackedTool      // unsafe 工具排队队列
+	pending     []*TrackedTool // 正在执行 + 排队中
+	ordered     *OrderedBuffer // 有序缓冲
+	unsafeCount int            // 正在执行的不安全工具数
+	unsafeQueue []*TrackedTool // unsafe 工具排队队列
 
 	// emit 回调（由调用方通过 SetEmitFunc 注入）
 	emitFunc func(result *mcphost.ToolResult)
@@ -34,15 +34,15 @@ type StreamingExecutor struct {
 
 // TrackedTool 跟踪单个工具的执行状态。
 type TrackedTool struct {
-	ID        string                 // tool_use ID
-	Name      string                 // 工具名
-	Input     json.RawMessage        // 工具参数
-	IsSafe    bool                   // 是否并发安全
-	Result    *mcphost.ToolResult   // 执行结果
-	Done      chan struct{}          // 完成信号
-	Aborted   bool                   // 是否被 sibling 取消
-	ctx       context.Context        // 执行上下文，用于传播取消信号
-	closeOnce sync.Once              // Bug 1 fix: 防止 Done channel 被多次 close
+	ID        string              // tool_use ID
+	Name      string              // 工具名
+	Input     json.RawMessage     // 工具参数
+	IsSafe    bool                // 是否并发安全
+	Result    *mcphost.ToolResult // 执行结果
+	Done      chan struct{}       // 完成信号
+	Aborted   bool                // 是否被 sibling 取消
+	ctx       context.Context     // 执行上下文，用于传播取消信号
+	closeOnce sync.Once           // Bug 1 fix: 防止 Done channel 被多次 close
 }
 
 // closeDone 安全关闭 Done channel，通过 sync.Once 防止 double-close panic。
@@ -66,7 +66,7 @@ func NewStreamingExecutor(
 	executor ToolExecutorFunc,
 ) *StreamingExecutor {
 	return &StreamingExecutor{
-		toolDef: listToolsToMap(toolDefs),
+		toolDef:  listToolsToMap(toolDefs),
 		executor: executor,
 		ordered:  NewOrderedBuffer(16),
 		pending:  make([]*TrackedTool, 0, 16),
@@ -187,19 +187,23 @@ func (se *StreamingExecutor) AbortAll(reason string) {
 	se.mu.Lock()
 	defer se.mu.Unlock()
 
+	cancelled := &mcphost.ToolResult{
+		Content: content(fmt.Sprintf("cancelled due to sibling tool failure: %s", reason)),
+		IsError: true,
+	}
 	for _, tool := range se.pending {
 		if !tool.IsSafe {
 			tool.Aborted = true
+			if tool.Result == nil {
+				tool.Result = cancelled
+			}
 			// Bug 1 fix: 使用 closeDone() 防止与 runTool 的 defer closeDone() double-close panic
 			tool.closeDone()
 		}
 	}
 
 	// 注入合成错误到结果流
-	se.ordered.Add(&mcphost.ToolResult{
-		Content: content(fmt.Sprintf("cancelled due to sibling tool failure: %s", reason)),
-		IsError: true,
-	})
+	se.ordered.Add(cancelled)
 }
 
 // GetResults 等待所有工具完成并返回有序结果。
@@ -218,7 +222,7 @@ func (se *StreamingExecutor) GetResults() []*mcphost.ToolResult {
 
 	results := make([]*mcphost.ToolResult, 0, len(se.pending))
 	for _, tool := range se.pending {
-		if tool.Result != nil && !tool.Aborted {
+		if tool.Result != nil {
 			results = append(results, tool.Result)
 		}
 	}
@@ -242,7 +246,7 @@ func (se *StreamingExecutor) GetResultsByID() map[string]*mcphost.ToolResult {
 
 	results := make(map[string]*mcphost.ToolResult, len(se.pending))
 	for _, tool := range se.pending {
-		if tool.Result != nil && !tool.Aborted {
+		if tool.Result != nil {
 			results[tool.ID] = tool.Result
 		}
 	}

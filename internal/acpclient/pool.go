@@ -9,20 +9,27 @@ import (
 
 	"github.com/chef-guo/agents-hive/internal/errs"
 	"github.com/chef-guo/agents-hive/internal/subagent"
+	"github.com/chef-guo/agents-hive/internal/tools"
 )
 
 // ACPClientPool 管理多个远程 ACP Agent 连接
 type ACPClientPool struct {
-	agents map[string]*RemoteACPAgent
-	mu     sync.RWMutex
-	logger *zap.Logger
+	agents   map[string]*RemoteACPAgent
+	mu       sync.RWMutex
+	logger   *zap.Logger
+	observer tools.DelegationObserver
 }
 
 // NewPool 创建新的 ACP 客户端连接池
 func NewPool(logger *zap.Logger) *ACPClientPool {
+	return NewPoolWithObserver(logger, nil)
+}
+
+func NewPoolWithObserver(logger *zap.Logger, observer tools.DelegationObserver) *ACPClientPool {
 	return &ACPClientPool{
-		agents: make(map[string]*RemoteACPAgent),
-		logger: logger.With(zap.String("component", "acp_client_pool")),
+		agents:   make(map[string]*RemoteACPAgent),
+		logger:   logger.With(zap.String("component", "acp_client_pool")),
+		observer: observer,
 	}
 }
 
@@ -40,6 +47,7 @@ func (p *ACPClientPool) Connect(ctx context.Context, cfg RemoteAgentConfig) (*Re
 	if err != nil {
 		return nil, err
 	}
+	agent.observer = p.observer
 
 	p.mu.Lock()
 	p.agents[cfg.Name] = agent

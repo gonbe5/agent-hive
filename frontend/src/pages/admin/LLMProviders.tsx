@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { Plus, Trash2, Check, X, ChevronDown, ChevronUp, Star } from 'lucide-react';
@@ -304,7 +304,7 @@ export function LLMProviders() {
   const [showOrphanModels, setShowOrphanModels] = useState(false);
   const [creatingOrphanModel, setCreatingOrphanModel] = useState(false);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const [provRes, modRes] = await Promise.all([
@@ -318,9 +318,9 @@ export function LLMProviders() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [client, addToast]);
 
-  useEffect(() => { load(); }, [client]);
+  useEffect(() => { load(); }, [load]);
 
   // ── Provider CRUD ──
   const handleCreateProvider = async (data: ProviderFormData) => {
@@ -353,7 +353,11 @@ export function LLMProviders() {
   const toggleProvider = (name: string) =>
     setExpandedProviders((s) => {
       const next = new Set(s);
-      next.has(name) ? next.delete(name) : next.add(name);
+      if (next.has(name)) {
+        next.delete(name);
+      } else {
+        next.add(name);
+      }
       return next;
     });
 

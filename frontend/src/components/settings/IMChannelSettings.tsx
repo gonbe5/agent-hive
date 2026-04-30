@@ -275,19 +275,8 @@ export function IMChannelSettings() {
 function PlatformSection({ title, enabled, onToggle, children }: {
   title: string; enabled: boolean; onToggle: (v: boolean) => void; children: React.ReactNode;
 }) {
-  // enabled=true 时默认展开，方便用户看到已开启平台的完整配置（包括流式卡片子区块）；
-  // enabled=false 时折叠以减少视觉噪音。
-  // config 是 async fetch 的——首挂载时 enabled 常为 false，拿到数据后才变 true，
-  // 所以用 useEffect 在 enabled false→true 的那一刻把 expanded 同步为 true。
-  // 用户此后手动折叠/展开（setExpanded）的选择不会再被覆盖。
-  const [expanded, setExpanded] = useState(enabled);
-  const [prevEnabled, setPrevEnabled] = useState(enabled);
-  useEffect(() => {
-    if (enabled && !prevEnabled) {
-      setExpanded(true);
-    }
-    setPrevEnabled(enabled);
-  }, [enabled, prevEnabled]);
+  const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
+  const expanded = expandedOverride ?? enabled;
   return (
     <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-2xl overflow-hidden shadow-sm">
       <div className="px-5 py-4 flex items-center justify-between border-b border-[var(--border-color)]">
@@ -302,7 +291,7 @@ function PlatformSection({ title, enabled, onToggle, children }: {
             <input type="checkbox" checked={enabled} onChange={(e) => onToggle(e.target.checked)} className="sr-only peer" />
             <div className="w-9 h-5 bg-[var(--bg-secondary)] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[var(--accent-600)]"></div>
           </label>
-          <button onClick={() => setExpanded(!expanded)} className="px-2 py-1 text-xs text-[var(--accent-600)] hover:text-[var(--accent-700)] dark:text-[var(--accent-300)]">
+          <button onClick={() => setExpandedOverride(!expanded)} className="px-2 py-1 text-xs text-[var(--accent-600)] hover:text-[var(--accent-700)] dark:text-[var(--accent-300)]">
             {expanded ? '▲' : '▼'}
           </button>
         </div>

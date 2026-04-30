@@ -12,6 +12,8 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/chef-guo/agents-hive/internal/accounting"
+	"github.com/chef-guo/agents-hive/internal/agentquality"
 	"github.com/chef-guo/agents-hive/internal/airouter"
 	"github.com/chef-guo/agents-hive/internal/auth"
 	"github.com/chef-guo/agents-hive/internal/errs"
@@ -20,6 +22,7 @@ import (
 	"github.com/chef-guo/agents-hive/internal/llm"
 	"github.com/chef-guo/agents-hive/internal/master/assistantcap"
 	"github.com/chef-guo/agents-hive/internal/mcphost"
+	"github.com/chef-guo/agents-hive/internal/memory"
 	"github.com/chef-guo/agents-hive/internal/observability"
 	"github.com/chef-guo/agents-hive/internal/plugin"
 	"github.com/chef-guo/agents-hive/internal/skills"
@@ -32,6 +35,7 @@ type directExecParams struct {
 	sessionLLM      *llm.Client
 	availableTools  []mcphost.ToolDefinition
 	systemPrompt    string
+	promptVersions  []string
 	reasoningEffort string
 	imContext       *imctx.IMMessageContext
 }
@@ -57,7 +61,10 @@ func (m *Master) prepareDirectExecParams(ctx context.Context, session *SessionSt
 	} else if m.mcpHost != nil {
 		availableTools = m.mcpHost.ListTools()
 	}
-	systemPrompt := m.buildSystemPrompt(availableTools)
+	modelVisibleTools := modelVisibleToolsForSession(session, availableTools)
+	promptBuild := m.buildSystemPromptWithMeta(modelVisibleTools)
+	systemPrompt := promptBuild.Content
+	promptVersions := promptBuild.Versions()
 
 	// 记忆注入
 	if m.memoryInjector != nil {
@@ -72,11 +79,16 @@ func (m *Master) prepareDirectExecParams(ctx context.Context, session *SessionSt
 		session.mu.RUnlock()
 		if lastUserMsg != "" {
 			userID := auth.UserIDFrom(ctx)
-			memCtx, err := m.memoryInjector.InjectContext(ctx, lastUserMsg, session.ID, userID)
+			memResult, err := m.memoryInjector.InjectContextDetailed(ctx, lastUserMsg, session.ID, userID)
 			if err != nil {
 				m.logger.Warn("记忆注入失败", zap.Error(err))
-			} else if memCtx != "" {
-				systemPrompt += "\n" + memCtx
+			} else {
+				if memResult.Text != "" {
+					systemPrompt += "\n" + memResult.Text
+				}
+				if shouldRecordMemoryInjection(memResult) {
+					session.SetQualityMemoryInjection(memResult)
+				}
 			}
 		}
 	}
@@ -156,6 +168,7 @@ func (m *Master) prepareDirectExecParams(ctx context.Context, session *SessionSt
 		sessionLLM:      sessionLLM,
 		availableTools:  availableTools,
 		systemPrompt:    systemPrompt,
+		promptVersions:  promptVersions,
 		reasoningEffort: reasoningEffort,
 		imContext:       pendingIMCtx,
 	}, nil
@@ -213,7 +226,7 @@ func (m *Master) processTaskDirectExec(ctx context.Context, request string, sess
 		return err
 	}
 
-	return m.runReActLoop(ctx, session, responseID, params.sessionLLM, params.availableTools, params.systemPrompt, params.reasoningEffort, params.imContext, sessionTraceID, sessionSpanID)
+	return m.runReActLoop(ctx, session, responseID, params.sessionLLM, params.availableTools, params.systemPrompt, params.promptVersions, params.reasoningEffort, params.imContext, sessionTraceID, sessionSpanID)
 }
 
 // runReActLoop 执行核心 ReAct 迭代循环（LLM 调用 → 工具执行 → 广播）。
@@ -225,6 +238,7 @@ func (m *Master) runReActLoop(
 	sessionLLM *llm.Client,
 	availableTools []mcphost.ToolDefinition,
 	systemPrompt string,
+	promptVersions []string,
 	reasoningEffort string,
 	imCtx *imctx.IMMessageContext,
 	sessionTraceID, sessionSpanID string,
@@ -327,12 +341,36 @@ func (m *Master) runReActLoop(
 		preparedMessages := m.prepareMessagesWithCompression(ctx, session, msgsCopy)
 		// 移除孤立的 tool result（压缩可能导致 assistant tool_call 被截断而 tool result 保留）
 		preparedMessages = removeOrphanedToolResults(preparedMessages, m.logger)
+		pendingAttachments, _, _ := session.GetPendingData()
+		memoryInjection := session.ConsumeQualityMemoryInjection()
+		m.emitQualityEvent(sessionTraceID, sessionSpanID, session.ID, agentquality.Event{
+			Name:        agentquality.EventContextBuild,
+			Route:       routeFromSession(session),
+			FailureType: agentquality.FailureNone,
+			FinalStatus: agentquality.StatusPass,
+			ContextBuild: agentquality.ContextBuild{
+				MessageCount:       len(preparedMessages),
+				Compressed:         len(preparedMessages) < len(msgsCopy),
+				MemoryInjected:     memoryInjection.Text != "",
+				MemoryIDs:          memoryInjection.MemoryIDs(),
+				SkippedMemoryIDs:   append([]int64(nil), memoryInjection.SkippedMemoryIDs...),
+				SkippedExpired:     memoryInjection.SkippedExpired,
+				SkippedLowTrust:    memoryInjection.SkippedLowTrust,
+				SkippedCrossUser:   memoryInjection.SkippedCrossUser,
+				SkippedTokenBudget: memoryInjection.SkippedTokenBudget,
+				SkippedMemoryTotal: memoryInjection.SkippedTotal(),
+				AttachmentCount:    len(pendingAttachments),
+				PromptVersions:     promptVersions,
+				EstimatedTokens:    memoryInjection.EstimatedTokens,
+				ContaminationCheck: contaminationStatus(memoryInjection),
+			},
+		})
 
 		m.logger.Info("发起 LLM 调用",
 			zap.String("session_id", session.ID),
 			zap.String("model", sessionLLM.Model()),
 			zap.Int("iteration", i+1),
-			zap.Int("tools_available", len(availableTools)),
+			zap.Int("tools_available", len(modelVisibleToolsForSession(session, availableTools))),
 		)
 		llmCallStart := time.Now()
 		llmSpanID := observability.NewSpanID()
@@ -345,6 +383,7 @@ func (m *Master) runReActLoop(
 		var finalToolCallCount int
 		var firstChunkAt time.Time
 		var lastContentLen int
+		var lastToolPreviewFingerprint string
 
 		// P0-A：根据 feature flag 决定本轮 ToolChoice 策略。
 		// 但 IM 上下文里若已有文档引用，必须强制 required，否则模型会绕过工具直接口头分析。
@@ -368,11 +407,29 @@ func (m *Master) runReActLoop(
 		llmReq := llm.ChatWithToolsRequest{
 			SystemPrompt:    systemPrompt,
 			Messages:        preparedMessages,
-			Tools:           availableTools,
+			Tools:           modelVisibleToolsForSession(session, availableTools),
 			Temperature:     temperature,
 			MaxTokens:       maxTokens,
 			ReasoningEffort: reasoningEffort,
 			ToolChoice:      toolChoice,
+		}
+		agentState := &AgentState{
+			SessionID:    session.ID,
+			UserID:       userID,
+			SystemPrompt: systemPrompt,
+			Messages:     preparedMessages,
+			Request:      &llmReq,
+			Evidence:     BuildToolEvidence(preparedMessages),
+		}
+		if err := m.middlewarePipeline.BeforeModel(ctx, agentState); err != nil {
+			m.emitQualityEvent(sessionTraceID, sessionSpanID, session.ID, agentquality.Event{
+				Name:        agentquality.EventAgentTurn,
+				Route:       routeFromSession(session),
+				FailureType: agentquality.FailureRuntime,
+				RetryReason: "middleware_before_model",
+				FinalStatus: agentquality.StatusFail,
+			})
+			return errs.Wrap(errs.CodePlanExecFailed, "BeforeModel middleware failed", err)
 		}
 		resp, err := sessionLLM.ChatWithToolsStream(ctx, llmReq, func(chunk llm.StreamChunk) error {
 			chunkClass := classifyStreamChunk(chunk)
@@ -416,7 +473,19 @@ func (m *Master) runReActLoop(
 				}
 			}
 			lastContentLen = len(chunk.ContentSoFar)
-			// 有可见内容或推理内容时才推送；tool_calls-only chunk 只做诊断，不执行也不广播 partial args。
+			if chunkClass.HasToolCalls {
+				fingerprint := toolCallPreviewFingerprint(chunk.ToolCalls)
+				if fingerprint != "" && fingerprint != lastToolPreviewFingerprint {
+					lastToolPreviewFingerprint = fingerprint
+					if payload, ok := buildToolCallPreviewPayload(session.ID, chunk, time.Now()); ok {
+						m.eventBus.BroadcastSessionMessage(session.ID, BroadcastMessage{
+							Type:    EventTypeMessage,
+							Payload: payload,
+						})
+					}
+				}
+			}
+			// 有可见内容或推理内容时才推送；tool_calls-only chunk 已通过预览事件广播，不执行工具。
 			if !chunkClass.HasText {
 				return nil
 			}
@@ -537,6 +606,7 @@ func (m *Master) runReActLoop(
 			)
 			llmDurationMs += retryDuration
 		}
+		agentState.Response = resp
 
 		// LLM 调用成功：写入 trace + metrics
 		m.enqueueSpan(observability.Span{
@@ -587,7 +657,18 @@ func (m *Master) runReActLoop(
 
 		// 成本追踪：通过 AsyncRecorder 异步记录本次 LLM 调用的用量和成本（nil 安全）
 		if m.asyncRecorder != nil {
-			m.asyncRecorder.RecordUsage(session.ID, userID, sessionLLM.Model(), resp.Usage)
+			qv := agentquality.FromContext(ctx)
+			promptVersion := strings.Join(promptVersions, ",")
+			if qv.PromptVersion != "" {
+				promptVersion = qv.PromptVersion
+			}
+			m.asyncRecorder.RecordUsageWithMeta(session.ID, userID, sessionLLM.Model(), resp.Usage, accounting.UsageMeta{
+				TaskType:      "react",
+				QualityCaseID: qv.CaseID,
+				PromptVersion: promptVersion,
+				FailureType:   string(qv.FailureType),
+				FinalStatus:   string(qv.FinalStatus),
+			})
 		}
 
 		m.logger.Info("LLM 调用完成",
@@ -619,6 +700,13 @@ func (m *Master) runReActLoop(
 		// 不会被调用（emitAssistantMessage 提前 return）。但 cap 本身的颁发条件就锁死了 pass 语义。
 		passCap, passCapOk := assistantcap.GrantPass(int(action), int(requiredGuardPass))
 		if !emitAssistantMessage(action) {
+			m.emitQualityEvent(sessionTraceID, sessionSpanID, session.ID, agentquality.Event{
+				Name:        agentquality.EventAgentTurn,
+				Route:       routeFromSession(session),
+				FailureType: agentquality.FailureTool,
+				RetryReason: "required_zero_tool",
+				FinalStatus: agentquality.StatusFail,
+			})
 			switch action {
 			case requiredGuardFail:
 				m.logger.Warn("[quality-guards] P0-A required 连续 2 轮未出工具调用，结构化失败退出（assistant 消息 + plugin hook 均已跳过）",
@@ -644,6 +732,23 @@ func (m *Master) runReActLoop(
 				})
 				continue
 			}
+		}
+
+		if err := m.middlewarePipeline.AfterModel(ctx, agentState); err != nil {
+			m.emitQualityEvent(sessionTraceID, sessionSpanID, session.ID, agentquality.Event{
+				Name:        agentquality.EventAgentTurn,
+				Route:       routeFromSession(session),
+				FailureType: agentquality.FailureModel,
+				RetryReason: "grounding_validation",
+				FinalStatus: agentquality.StatusFail,
+				Attributes:  map[string]any{"error": err.Error()},
+			})
+			m.logger.Warn("[quality-guards] PostValidation 阻断未证实模型输出",
+				zap.String("session_id", session.ID),
+				zap.Int("iteration", i+1),
+				zap.Error(err),
+			)
+			return errs.Wrap(errs.CodePlanExecFailed, "post validation failed", err)
 		}
 
 		// ---- 以下路径仅在 guard pass 时执行 ----
@@ -885,7 +990,7 @@ func (m *Master) runReActLoop(
 						toolCtx = toolctx.WithSkipPermission(ctx)
 					}
 
-					tr := m.executeTool(toolCtx, session.ID, userID, toolCall, sessionTraceID, sessionSpanID)
+					tr := m.executeTool(toolCtx, session, userID, toolCall, sessionTraceID, sessionSpanID)
 					// 统一时间戳：创建时生成，贯穿 WS 广播和 DB 存储
 					toolCreatedAt := time.Now().Format(time.RFC3339)
 					m.appendSessionMessage(session, llm.MessageWithTools{
@@ -1022,7 +1127,11 @@ func canonicalFingerprint(toolName string, args json.RawMessage) string {
 }
 
 // executeTool 执行单个工具调用，返回结果
-func (m *Master) executeTool(ctx context.Context, sessionID, userID string, toolCall llm.ToolCall, sessionTraceID, sessionSpanID string) toolResult {
+func (m *Master) executeTool(ctx context.Context, session *SessionState, userID string, toolCall llm.ToolCall, sessionTraceID, sessionSpanID string) toolResult {
+	sessionID := ""
+	if session != nil {
+		sessionID = session.ID
+	}
 	// 统一注入 sessionID，确保下游工具（如 spawn_agent）能从 ctx 中提取
 	ctx = toolctx.WithSessionID(ctx, sessionID)
 
@@ -1046,6 +1155,18 @@ func (m *Master) executeTool(ctx context.Context, sessionID, userID string, tool
 	if toolCall.Name == "wenyan__publish_article" {
 		args = ensureWenyanTitle(args, m.logger)
 	}
+
+	m.emitQualityEvent(sessionTraceID, sessionSpanID, sessionID, agentquality.Event{
+		Name:        agentquality.EventToolDecision,
+		Route:       routeFromSession(session),
+		FailureType: agentquality.FailureNone,
+		FinalStatus: agentquality.StatusPass,
+		ToolDecision: agentquality.ToolDecision{
+			Actual:   toolCall.Name,
+			Decision: agentquality.DecisionAllowed,
+			ArgsHash: hashToolArgs(args),
+		},
+	})
 
 	// 工具策略过滤检查：确保 LLM 不会调用被 profile/deny 排除的工具
 	if m.masterFilter != nil && !m.masterFilter.IsAllowed(toolCall.Name) {
@@ -1097,20 +1218,38 @@ func (m *Master) executeTool(ctx context.Context, sessionID, userID string, tool
 	case "question", "parallel_dispatch", "task", "spawn_agent", "skill", "create_tool":
 		// 这些工具有自己的超时机制，不加额外超时
 	default:
-		toolCtx, toolCancel = context.WithTimeout(ctx, 2*time.Minute)
+		toolTimeout := m.config.RuntimePolicy.ToolTimeout
+		if toolTimeout <= 0 {
+			toolTimeout = 2 * time.Minute
+		}
+		toolCtx, toolCancel = context.WithTimeout(ctx, toolTimeout)
 		defer toolCancel()
 	}
 	// 优先走 ToolBridge（补齐插件 hooks、read_file 缓存、指标、tool-not-found 友好提示），
-	// fallback 到 mcpHost 直接执行（向后兼容测试场景）
+	// fallback 到 mcpHost 直接执行（向后兼容测试场景）。实际执行闭包再交给
+	// middleware 包裹，使工具级质量治理可以观察、改写或阻断调用。
+	call := &ToolCall{Name: toolCall.Name, Arguments: args}
+	wrappedResult, err := m.middlewarePipeline.WrapToolCall(toolCtx, call, func(runCtx context.Context, runCall *ToolCall) (*ToolResult, error) {
+		if runCall == nil {
+			return nil, fmt.Errorf("middleware passed nil tool call")
+		}
+		if m.toolBridge != nil {
+			result, execErr := m.toolBridge.ExecuteDirect(runCtx, runCall.Name, runCall.Arguments)
+			return &ToolResult{Result: result}, execErr
+		}
+		if m.mcpHost != nil {
+			result, execErr := m.mcpHost.ExecuteTool(runCtx, runCall.Name, runCall.Arguments)
+			return &ToolResult{Result: result}, execErr
+		}
+		return nil, fmt.Errorf("no tool execution backend available")
+	})
 	var result *mcphost.ToolResult
-	var err error
-	if m.toolBridge != nil {
-		result, err = m.toolBridge.ExecuteDirect(toolCtx, toolCall.Name, args)
-	} else if m.mcpHost != nil {
-		result, err = m.mcpHost.ExecuteTool(toolCtx, toolCall.Name, args)
-	} else {
-		err = fmt.Errorf("no tool execution backend available")
+	if wrappedResult != nil {
+		result = wrappedResult.Result
 	}
+	executedToolCall := toolCall
+	executedToolCall.Name = call.Name
+	executedArgs := call.Arguments
 	duration := time.Since(start)
 	toolSpanID := observability.NewSpanID()
 
@@ -1124,7 +1263,7 @@ func (m *Master) executeTool(ctx context.Context, sessionID, userID string, tool
 			}
 		}
 		m.logger.Info("工具执行结束",
-			zap.String("tool", toolCall.Name),
+			zap.String("tool", executedToolCall.Name),
 			zap.String("call_id", toolCall.ID),
 			zap.Int64("duration_ms", duration.Milliseconds()),
 			zap.Bool("has_error", err != nil),
@@ -1135,12 +1274,12 @@ func (m *Master) executeTool(ctx context.Context, sessionID, userID string, tool
 
 	if err != nil {
 		m.logger.Warn("工具执行失败",
-			zap.String("tool", toolCall.Name),
+			zap.String("tool", executedToolCall.Name),
 			zap.Error(err))
 		// 广播工具调用失败事件
 		m.emitToolCallEvent(sessionID, ToolCallEvent{
 			ToolCallID: toolCall.ID,
-			ToolName:   toolCall.Name,
+			ToolName:   executedToolCall.Name,
 			Status:     "error",
 			Duration:   duration.Milliseconds(),
 			Error:      err.Error(),
@@ -1156,15 +1295,15 @@ func (m *Master) executeTool(ctx context.Context, sessionID, userID string, tool
 			UserID:       userID,
 			DurationMs:   int(duration.Milliseconds()),
 			Status:       "error",
-			Attributes:   map[string]any{"tool_name": toolCall.Name, "error": err.Error()},
+			Attributes:   map[string]any{"tool_name": executedToolCall.Name, "error": err.Error()},
 			Ts:           start,
 		})
 		m.enqueueMetric(observability.Metric{
 			Name:   "hive.tool.errors",
 			Value:  1,
-			Labels: map[string]any{"tool_name": toolCall.Name, "session_id": sessionID},
+			Labels: map[string]any{"tool_name": executedToolCall.Name, "session_id": sessionID},
 		})
-		m.logToolCall(ctx, sessionID, toolCall, string(args), err.Error(), true, duration)
+		m.logToolCall(ctx, sessionID, executedToolCall, string(executedArgs), err.Error(), true, duration)
 		errMsg := fmt.Sprintf("[工具执行失败: %v]", err)
 		return toolResult{Content: errMsg, IsError: true, Terminal: isTerminalError(errMsg)}
 	}
@@ -1174,7 +1313,7 @@ func (m *Master) executeTool(ctx context.Context, sessionID, userID string, tool
 		decoded := mcphost.DecodeToolContent(result.Content)
 		m.emitToolCallEvent(sessionID, ToolCallEvent{
 			ToolCallID: toolCall.ID,
-			ToolName:   toolCall.Name,
+			ToolName:   executedToolCall.Name,
 			Status:     "error",
 			Duration:   duration.Milliseconds(),
 			Error:      decoded,
@@ -1190,22 +1329,22 @@ func (m *Master) executeTool(ctx context.Context, sessionID, userID string, tool
 			UserID:       userID,
 			DurationMs:   int(duration.Milliseconds()),
 			Status:       "error",
-			Attributes:   map[string]any{"tool_name": toolCall.Name, "is_error": true},
+			Attributes:   map[string]any{"tool_name": executedToolCall.Name, "is_error": true},
 			Ts:           start,
 		})
-		m.logToolCall(ctx, sessionID, toolCall, string(args), decoded, true, duration)
+		m.logToolCall(ctx, sessionID, executedToolCall, string(executedArgs), decoded, true, duration)
 		return toolResult{Content: decoded, IsError: true, Terminal: isTerminalError(decoded)}
 	}
 
 	// nil result 防御：先检查再记录，避免 broadcast success + span ok 与 IsError:true 矛盾
 	if result == nil {
 		m.logger.Warn("工具执行返回 nil result（无 error），标记为异常",
-			zap.String("tool", toolCall.Name),
+			zap.String("tool", executedToolCall.Name),
 			zap.String("call_id", toolCall.ID),
 		)
 		m.emitToolCallEvent(sessionID, ToolCallEvent{
 			ToolCallID: toolCall.ID,
-			ToolName:   toolCall.Name,
+			ToolName:   executedToolCall.Name,
 			Status:     "error",
 			Duration:   duration.Milliseconds(),
 			SessionID:  sessionID,
@@ -1220,17 +1359,17 @@ func (m *Master) executeTool(ctx context.Context, sessionID, userID string, tool
 			UserID:       userID,
 			DurationMs:   int(duration.Milliseconds()),
 			Status:       "error",
-			Attributes:   map[string]any{"tool_name": toolCall.Name, "error": "nil result"},
+			Attributes:   map[string]any{"tool_name": executedToolCall.Name, "error": "nil result"},
 			Ts:           start,
 		})
-		m.logToolCall(ctx, sessionID, toolCall, string(args), "[工具返回空结果]", true, duration)
+		m.logToolCall(ctx, sessionID, executedToolCall, string(executedArgs), "[工具返回空结果]", true, duration)
 		return toolResult{Content: "[工具返回空结果]", IsError: true}
 	}
 
 	// 广播工具调用成功事件
 	m.emitToolCallEvent(sessionID, ToolCallEvent{
 		ToolCallID: toolCall.ID,
-		ToolName:   toolCall.Name,
+		ToolName:   executedToolCall.Name,
 		Status:     "success",
 		Duration:   duration.Milliseconds(),
 		SessionID:  sessionID,
@@ -1238,7 +1377,7 @@ func (m *Master) executeTool(ctx context.Context, sessionID, userID string, tool
 
 	content := mcphost.DecodeToolContent(result.Content)
 	m.logger.Info("工具执行成功",
-		zap.String("tool", toolCall.Name),
+		zap.String("tool", executedToolCall.Name),
 		zap.String("call_id", toolCall.ID),
 		zap.Int64("duration_ms", duration.Milliseconds()),
 		zap.Int("result_bytes", len(result.Content)),
@@ -1254,16 +1393,17 @@ func (m *Master) executeTool(ctx context.Context, sessionID, userID string, tool
 		UserID:       userID,
 		DurationMs:   int(duration.Milliseconds()),
 		Status:       "ok",
-		Attributes:   map[string]any{"tool_name": toolCall.Name},
+		Attributes:   map[string]any{"tool_name": executedToolCall.Name},
 		Ts:           start,
 	})
 	m.enqueueMetric(observability.Metric{
 		Name:   "hive.tool.duration_ms",
 		Value:  float64(duration.Milliseconds()),
-		Labels: map[string]any{"tool_name": toolCall.Name, "session_id": sessionID},
+		Labels: map[string]any{"tool_name": executedToolCall.Name, "session_id": sessionID},
 	})
-	m.logToolCall(ctx, sessionID, toolCall, string(args), content, false, duration)
-	m.logFileChangeIfNeeded(ctx, sessionID, toolCall.Name, args, content)
+	m.logToolCall(ctx, sessionID, executedToolCall, string(executedArgs), content, false, duration)
+	m.logFileChangeIfNeeded(ctx, sessionID, executedToolCall.Name, executedArgs, content)
+	recordToolDiscoveryFromResult(session, executedToolCall, content, false)
 
 	return toolResult{Content: content}
 }
@@ -1505,6 +1645,20 @@ func repairOrphanedToolCalls(messages []llm.MessageWithTools, logger *zap.Logger
 		return result, patched
 	}
 	return messages, nil
+}
+
+func contaminationStatus(result memory.InjectionResult) string {
+	if result.SkippedTotal() > 0 {
+		return "filtered"
+	}
+	if len(result.Memories) > 0 {
+		return "clean"
+	}
+	return "none"
+}
+
+func shouldRecordMemoryInjection(result memory.InjectionResult) bool {
+	return result.HasSignal()
 }
 
 // removeOrphanedToolResults 移除孤立的 tool result 消息。
@@ -2044,7 +2198,7 @@ func (m *Master) executeToolsConcurrent(
 
 			// 构建 ToolCall（executeTool 需要完整字段）
 			tc := llm.ToolCall{Name: name, Arguments: input}
-			tr := m.executeTool(resolvedCtx, session.ID, userID, tc, sessionTraceID, sessionSpanID)
+			tr := m.executeTool(resolvedCtx, session, userID, tc, sessionTraceID, sessionSpanID)
 
 			// 将 string content 编码为 json.RawMessage
 			contentBytes, _ := json.Marshal(tr.Content)
@@ -2100,6 +2254,7 @@ func (m *Master) executeToolsConcurrent(
 				*terminalFailures = append(*terminalFailures, toolCall.Name)
 			}
 		} else {
+			recordToolDiscoveryFromResult(session, toolCall, contentStr, false)
 			approvedCalls[callFP] = true
 			if imRefsRead != nil && isSuccessfulIMReferenceRead(toolCall, false) {
 				*imRefsRead = true

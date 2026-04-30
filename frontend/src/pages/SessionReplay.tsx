@@ -3,18 +3,23 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useReplayStore } from '../store/replay';
 import { useNodeClient } from '../hooks/useNodeClient';
 import { useReplayWebSocket } from '../hooks/useReplayWebSocket';
-import { getCharacterState } from '../types/journal';
+import { attachQualityEvent, getCharacterState } from '../types/journal';
+import type { Message } from '../types/api';
 import { AgentCharacter } from '../components/replay/AgentCharacter';
 import { ReplayTimeline } from '../components/replay/ReplayTimeline';
 import { ReplayControls } from '../components/replay/ReplayControls';
 import { EventDetailPanel } from '../components/replay/EventDetailPanel';
 import { ReplayStats } from '../components/replay/ReplayStats';
+import { buildQualityCandidateRequest } from '../components/replay/qualityCandidate';
+import { useAuthStore } from '../store/auth';
+import { useToastStore } from '../store/toast';
 import { ArrowLeft } from 'lucide-react';
 
 export function SessionReplay() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const [initialStepParam] = useState(() => searchParams.get('step'));
   const client = useNodeClient();
 
   // Live 模式 WebSocket 连接（独立连接，带 sessionId 隔离）
@@ -42,6 +47,10 @@ export function SessionReplay() {
   const [sessionDate, setSessionDate] = useState('');
   const [startedAt, setStartedAt] = useState<string | undefined>();
   const [endedAt, setEndedAt] = useState<string | undefined>();
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [candidateBusy, setCandidateBusy] = useState(false);
+  const currentUser = useAuthStore((s) => s.user);
+  const addToast = useToastStore((s) => s.addToast);
 
   // 加载数据
   useEffect(() => {
@@ -52,24 +61,26 @@ export function SessionReplay() {
     const load = async () => {
       try {
         // 并行加载 session 元数据和 journal 事件
-        const [session, journal] = await Promise.all([
+        const [session, journal, sessionMessages] = await Promise.all([
           client.getSession(id),
           client.getSessionJournal(id),
+          client.getMessages(id).catch(() => []),
         ]);
         setSessionName(session.name || '未命名会话');
         setSessionDate(session.created || session.last_accessed);
-        setEvents(journal.events);
+        setMessages(sessionMessages);
+        const eventsWithQuality = journal.events.map(attachQualityEvent);
+        setEvents(eventsWithQuality);
 
-        if (journal.events.length > 0) {
-          setStartedAt(journal.events[0].timestamp);
-          setEndedAt(journal.events[journal.events.length - 1].timestamp);
+        if (eventsWithQuality.length > 0) {
+          setStartedAt(eventsWithQuality[0].timestamp);
+          setEndedAt(eventsWithQuality[eventsWithQuality.length - 1].timestamp);
         }
 
         // URL 深链接：?step=N
-        const stepParam = searchParams.get('step');
-        if (stepParam) {
-          const step = parseInt(stepParam, 10);
-          if (!isNaN(step) && step >= 0 && step < journal.events.length) {
+        if (initialStepParam) {
+          const step = parseInt(initialStepParam, 10);
+          if (!isNaN(step) && step >= 0 && step < eventsWithQuality.length) {
             setCurrentIndex(step);
           }
         }
@@ -80,7 +91,7 @@ export function SessionReplay() {
     load();
 
     return () => { reset(); };
-  }, [id, client]);
+  }, [id, client, initialStepParam, reset, setCurrentIndex, setError, setEvents, setSessionId]);
 
   // 播放引擎
   useEffect(() => {
@@ -104,7 +115,7 @@ export function SessionReplay() {
     }, delay);
 
     return () => clearTimeout(timerRef.current);
-  }, [mode, currentIndex, filteredIndices, events, speed]);
+  }, [mode, currentIndex, filteredIndices, events, speed, setCurrentIndex, setMode]);
 
   // URL 深链接 debounced replaceState
   const urlTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -115,12 +126,31 @@ export function SessionReplay() {
       setSearchParams({ step: String(realIdx) }, { replace: true });
     }, 500);
     return () => clearTimeout(urlTimer.current);
-  }, [currentIndex, filteredIndices]);
+  }, [currentIndex, filteredIndices, setSearchParams]);
 
   // 当前事件
   const currentEventIdx = filteredIndices[currentIndex];
   const currentEvent = currentEventIdx != null ? events[currentEventIdx] : null;
   const charState = currentEvent ? getCharacterState(currentEvent) : 'idle';
+  const canCreateQualityCandidate = currentUser?.role === 'admin';
+
+  const createQualityCandidate = async () => {
+    if (!id || !currentEvent || currentEventIdx == null) return;
+    const req = buildQualityCandidateRequest(id, currentEvent, currentEventIdx, messages);
+    if (!req) {
+      addToast('warning', '当前事件不是可沉淀的失败质量事件，或找不到对应用户输入');
+      return;
+    }
+    setCandidateBusy(true);
+    try {
+      const created = await client.adminCreateQualityCandidate(req);
+      addToast('success', `已写入候选池：${created.id}`);
+    } catch (err) {
+      addToast('error', err instanceof Error ? err.message : '写入候选池失败');
+    } finally {
+      setCandidateBusy(false);
+    }
+  };
 
   // 思考泡泡
   const bubbleText = currentEvent?.type === 'decision'
@@ -253,7 +283,12 @@ export function SessionReplay() {
             background: 'var(--bg-card, #fff)',
             overflow: 'hidden',
           }}>
-            <EventDetailPanel event={currentEvent} />
+            <EventDetailPanel
+              event={currentEvent}
+              canCreateCandidate={canCreateQualityCandidate}
+              candidateBusy={candidateBusy}
+              onCreateCandidate={createQualityCandidate}
+            />
           </div>
         </div>
       </div>

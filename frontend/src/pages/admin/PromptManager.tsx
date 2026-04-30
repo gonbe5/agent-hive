@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { FileText, Edit2, Trash2, RotateCcw, Save, X, ChevronDown, ChevronRight } from 'lucide-react';
+import { AlertTriangle, FileText, Edit2, Trash2, RotateCcw, Save, X, ChevronDown, ChevronRight } from 'lucide-react';
 import { useNodeClient } from '../../hooks/useNodeClient';
 import { useToastStore } from '../../store/toast';
 import type { PromptRecord } from '../../types/api';
@@ -26,6 +26,7 @@ export function PromptManager() {
   const [loading, setLoading] = useState(true);
   const [editState, setEditState] = useState<EditState | null>(null);
   const [saving, setSaving] = useState(false);
+  const [smokeWarnings, setSmokeWarnings] = useState<string[]>([]);
   const [deleteConfirm, setDeleteConfirm] = useState<{ key: string; language: string } | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(['system', 'subagents']));
 
@@ -46,6 +47,7 @@ export function PromptManager() {
   const getRecord = (key: string) => records.find((r) => r.key === key);
 
   const handleEdit = async (key: string) => {
+    setSmokeWarnings([]);
     const existing = getRecord(key);
     if (existing) {
       setEditState({ key, language: existing.language, content: existing.content, isNew: false });
@@ -64,16 +66,35 @@ export function PromptManager() {
     if (!editState) return;
     if (!editState.content.trim()) { addToast('error', '内容不能为空'); return; }
     setSaving(true);
+    setSmokeWarnings([]);
+    let closeAfterSave = false;
     try {
+      const smoke = await client.adminPromptSmokeEval({
+        key: editState.key,
+        language: editState.language,
+        content: editState.content,
+      });
+      const warnings = smoke.warnings || [];
+      if (!smoke.ok) {
+        addToast('error', `Smoke eval 未通过（检查 ${smoke.checked_cases} 个用例）`);
+        setSmokeWarnings(warnings);
+        return;
+      }
+      if (warnings.length) {
+        setSmokeWarnings(warnings);
+        addToast('warning', `Smoke eval 有 ${warnings.length} 条警告，已继续保存`);
+      }
       await client.adminUpsertPrompt(editState.key, editState.language, editState.content);
       addToast('success', `Prompt "${editState.key}" 已保存`);
-      setEditState(null);
+      closeAfterSave = warnings.length === 0;
       load();
     } catch (e: unknown) {
       addToast('error', e instanceof Error ? e.message : '保存失败');
+      return;
     } finally {
       setSaving(false);
     }
+    if (closeAfterSave) setEditState(null);
   };
 
   const handleDelete = async () => {
@@ -217,7 +238,10 @@ export function PromptManager() {
               <input
                 type="text"
                 value={editState.language}
-                onChange={(e) => setEditState((s) => s ? { ...s, language: e.target.value } : s)}
+                onChange={(e) => {
+                  setSmokeWarnings([]);
+                  setEditState((s) => s ? { ...s, language: e.target.value } : s);
+                }}
                 placeholder="留空表示通用（所有语言）"
                 className="flex-1 text-sm px-3 py-1.5 rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-500)]"
               />
@@ -228,11 +252,28 @@ export function PromptManager() {
             <div className="flex-1 overflow-hidden px-5 py-3">
               <textarea
                 value={editState.content}
-                onChange={(e) => setEditState((s) => s ? { ...s, content: e.target.value } : s)}
+                onChange={(e) => {
+                  setSmokeWarnings([]);
+                  setEditState((s) => s ? { ...s, content: e.target.value } : s);
+                }}
                 className="w-full h-full min-h-[300px] text-sm font-mono px-3 py-2 rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-500)] resize-none"
                 spellCheck={false}
               />
             </div>
+
+            {smokeWarnings.length > 0 && (
+              <div className="mx-5 mb-3 rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/10 px-3 py-2 text-sm text-[var(--warning)]">
+                <div className="flex items-center gap-2 font-medium">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  Smoke eval 警告
+                </div>
+                <ul className="mt-1 space-y-1 pl-6 list-disc text-xs">
+                  {smokeWarnings.map((warning) => (
+                    <li key={warning}>{warning}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             {/* Footer */}
             <div className="flex items-center justify-between px-5 py-4 border-t border-[var(--border-color)]">

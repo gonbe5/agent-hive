@@ -44,7 +44,11 @@ const maxDepth = 3
 // registerTask 注册 task 工具到 MCP host
 // executor: TaskExecutor 实现（通常是 Master）
 // logger: 日志记录器
-func registerTask(host *mcphost.Host, executor TaskExecutor, logger *zap.Logger) {
+func registerTask(host *mcphost.Host, executor TaskExecutor, logger *zap.Logger, observer DelegationObserver, timeout time.Duration) {
+	if timeout <= 0 {
+		timeout = defaultDelegationTimeout
+	}
+
 	schema, _ := json.Marshal(map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -131,8 +135,8 @@ func registerTask(host *mcphost.Host, executor TaskExecutor, logger *zap.Logger)
 				zap.Int("depth", toolCtx.Depth),
 			)
 
-			// 执行任务（30 分钟兜底超时，防止子代理 LLM 卡死无限阻塞 Master 循环）
-			execCtx, execCancel := context.WithTimeout(ctx, 30*time.Minute)
+			// 执行任务（由 runtime policy 控制兜底超时，防止子代理 LLM 卡死无限阻塞 Master 循环）
+			execCtx, execCancel := context.WithTimeout(ctx, timeout)
 			defer execCancel()
 			result, err := executor.ExecuteTask(execCtx, params.AgentID, params.Instruction, params.Context)
 			if err != nil {
@@ -149,6 +153,16 @@ func registerTask(host *mcphost.Host, executor TaskExecutor, logger *zap.Logger)
 						zap.Error(err),
 					)
 				}
+				if observer != nil {
+					observer.RecordDelegation(ctx, DelegationEvent{
+						AgentID:     params.AgentID,
+						AgentType:   "subagent",
+						SpawnDepth:  toolCtx.Depth + 1,
+						Status:      "failed",
+						FailureType: "runtime",
+						Error:       err.Error(),
+					})
+				}
 				return &mcphost.ToolResult{
 					Content: jsonText(fmt.Sprintf("任务执行失败: %v", err)),
 					IsError: true,
@@ -159,6 +173,14 @@ func registerTask(host *mcphost.Host, executor TaskExecutor, logger *zap.Logger)
 				zap.String("agent_id", params.AgentID),
 				zap.Int("result_len", len(result)),
 			)
+			if observer != nil {
+				observer.RecordDelegation(ctx, DelegationEvent{
+					AgentID:    params.AgentID,
+					AgentType:  "subagent",
+					SpawnDepth: toolCtx.Depth + 1,
+					Status:     "completed",
+				})
+			}
 
 			return textResult(result), nil
 		},

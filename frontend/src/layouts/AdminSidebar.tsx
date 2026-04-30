@@ -1,6 +1,6 @@
 import { NavLink } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { LayoutDashboard, Bot, Zap, Settings, BookOpen, ArrowLeft, Users, BarChart2, ShieldCheck, FileText, BrainCircuit } from 'lucide-react';
+import { LayoutDashboard, Bot, Zap, Settings, BookOpen, ArrowLeft, Users, BarChart2, ShieldCheck, FileText, BrainCircuit, FlaskConical } from 'lucide-react';
 import { HiveLogo, NavItem } from './Sidebar';
 import { useWsStore } from '../store/ws';
 import { useAppStore } from '../store/app';
@@ -15,6 +15,7 @@ const ADMIN_NAV = [
   { path: '/admin/usage', label: 'nav.adminUsage', icon: BarChart2 },
   { path: '/admin/auth-providers', label: 'nav.adminAuthProviders', icon: ShieldCheck },
   { path: '/admin/prompts', label: 'nav.adminPrompts', icon: FileText },
+  { path: '/admin/quality-candidates', label: 'nav.adminQualityCandidates', icon: FlaskConical },
   { path: '/admin/settings', label: 'nav.adminSettings', icon: Settings },
   { path: '/admin/guide', label: 'nav.guide', icon: BookOpen },
 ];

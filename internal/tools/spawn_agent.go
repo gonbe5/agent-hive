@@ -12,6 +12,8 @@ import (
 	"github.com/chef-guo/agents-hive/internal/subagent"
 )
 
+const defaultDelegationTimeout = 30 * time.Minute
+
 // spawnAgentInput 是 spawn_agent 工具的输入参数
 type spawnAgentInput struct {
 	Name         string   `json:"name"`            // Agent 名称
@@ -28,7 +30,11 @@ type AgentSpawner interface {
 }
 
 // registerSpawnAgent 注册 spawn_agent 工具到 MCP host
-func registerSpawnAgent(host *mcphost.Host, executor TaskExecutor, spawner AgentSpawner, logger *zap.Logger) {
+func registerSpawnAgent(host *mcphost.Host, executor TaskExecutor, spawner AgentSpawner, logger *zap.Logger, observer DelegationObserver, timeout time.Duration) {
+	if timeout <= 0 {
+		timeout = defaultDelegationTimeout
+	}
+
 	schema, _ := json.Marshal(map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -111,14 +117,25 @@ func registerSpawnAgent(host *mcphost.Host, executor TaskExecutor, spawner Agent
 					zap.String("name", params.Name),
 					zap.Error(err),
 				)
+				if observer != nil {
+					observer.RecordDelegation(ctx, DelegationEvent{
+						AgentID:       params.Name,
+						AgentType:     "subagent",
+						ToolWhitelist: append([]string(nil), params.Tools...),
+						SpawnDepth:    toolCtx.Depth + 1,
+						Status:        "failed",
+						FailureType:   "runtime",
+						Error:         err.Error(),
+					})
+				}
 				return &mcphost.ToolResult{
 					Content: jsonText(fmt.Sprintf("创建 Agent 失败: %v", err)),
 					IsError: true,
 				}, nil
 			}
 
-			// 立即执行任务（30 分钟兜底超时，防止子代理 LLM 卡死无限阻塞 Master 循环）
-			execCtx, execCancel := context.WithTimeout(ctx, 30*time.Minute)
+			// 立即执行任务（由 runtime policy 控制兜底超时，防止子代理 LLM 卡死无限阻塞 Master 循环）
+			execCtx, execCancel := context.WithTimeout(ctx, timeout)
 			defer execCancel()
 			result, err := executor.ExecuteTask(execCtx, agent.ID(), params.Instruction, nil)
 
@@ -137,6 +154,17 @@ func registerSpawnAgent(host *mcphost.Host, executor TaskExecutor, spawner Agent
 					zap.String("agent_id", agentID),
 					zap.Error(err),
 				)
+				if observer != nil {
+					observer.RecordDelegation(ctx, DelegationEvent{
+						AgentID:       agentID,
+						AgentType:     "subagent",
+						ToolWhitelist: append([]string(nil), params.Tools...),
+						SpawnDepth:    toolCtx.Depth + 1,
+						Status:        "failed",
+						FailureType:   "runtime",
+						Error:         err.Error(),
+					})
+				}
 				return &mcphost.ToolResult{
 					Content: jsonText(fmt.Sprintf("Agent %q 已创建但任务执行失败: %v", agentID, err)),
 					IsError: true,
@@ -147,6 +175,15 @@ func registerSpawnAgent(host *mcphost.Host, executor TaskExecutor, spawner Agent
 				zap.String("agent_id", agentID),
 				zap.Int("result_len", len(result)),
 			)
+			if observer != nil {
+				observer.RecordDelegation(ctx, DelegationEvent{
+					AgentID:       agentID,
+					AgentType:     "subagent",
+					ToolWhitelist: append([]string(nil), params.Tools...),
+					SpawnDepth:    toolCtx.Depth + 1,
+					Status:        "completed",
+				})
+			}
 
 			return textResult(fmt.Sprintf("Agent %q (%s) 已创建并执行完成。\n\n结果:\n%s", agentID, params.Name, result)), nil
 		},

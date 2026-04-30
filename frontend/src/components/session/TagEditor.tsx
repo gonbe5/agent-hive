@@ -9,7 +9,7 @@ interface TagEditorProps {
   onClose: () => void;
 }
 
-export function TagEditor({ sessionId: _sessionId, initialTags, onSave, onClose }: TagEditorProps) {
+export function TagEditor({ initialTags, onSave, onClose }: TagEditorProps) {
   const { t } = useTranslation();
   const [tags, setTags] = useState<string[]>(initialTags);
   const [input, setInput] = useState('');

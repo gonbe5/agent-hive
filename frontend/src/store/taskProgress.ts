@@ -19,11 +19,50 @@ interface TaskGroup {
   status: 'running' | 'completed' | 'failed';
 }
 
+interface WireTaskItem {
+  id: string;
+  agentId?: string;
+  agent_id?: string;
+  instruction?: string;
+  status?: TaskItem['status'];
+  error?: string;
+  toolProgress?: TaskItem['toolProgress'];
+  tool_progress?: TaskItem['toolProgress'];
+}
+
+export interface TaskGroupEvent {
+  groupId?: string;
+  group_id?: string;
+  tasks?: WireTaskItem[];
+}
+
+export interface TaskProgressEvent extends Partial<TaskItem> {
+  groupId?: string;
+  group_id?: string;
+  taskId?: string;
+  task_id?: string;
+}
+
+export interface AgentProgressEvent {
+  agentId?: string;
+  agent_id?: string;
+  taskId?: string;
+  task_id?: string;
+  status?: string;
+  content?: string;
+  reasoning_content?: string;
+  toolName?: string;
+  tool_name?: string;
+  turn?: number;
+  maxTurns?: number;
+  max_turns?: number;
+}
+
 interface TaskProgressState {
   activeGroups: Map<string, TaskGroup>;
-  setTaskGroup: (event: any) => void;
+  setTaskGroup: (event: TaskGroupEvent) => void;
   updateTask: (groupId: string, taskId: string, update: Partial<TaskItem>) => void;
-  updateAgentProgress: (event: any) => void;
+  updateAgentProgress: (event: AgentProgressEvent) => void;
   clear: () => void;
 }
 
@@ -34,7 +73,8 @@ export const useTaskProgressStore = create<TaskProgressState>((set) => ({
   setTaskGroup: (event) => set((s) => {
     const groups = new Map(s.activeGroups);
     const groupId = event.groupId || event.group_id;
-    const tasks: TaskItem[] = (event.tasks || []).map((t: any) => ({
+    if (!groupId) return s;
+    const tasks: TaskItem[] = (event.tasks || []).map((t) => ({
       id: t.id,
       agentId: t.agentId || t.agent_id || '',
       instruction: t.instruction || '',

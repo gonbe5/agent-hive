@@ -43,6 +43,23 @@ type Config struct {
 	Auth            AuthConfig               `json:"auth,omitempty"`
 	PromptsDir      string                   `json:"prompts_dir,omitempty"` // 外部 prompt 文件目录（可选，优先于 go:embed）
 	SpecDriven      SpecDrivenConfig         `json:"spec_driven,omitempty"` // Spec-driven Phase 2 总开关（默认 mode=legacy，零成本短路）
+	RuntimePolicy   RuntimePolicyConfig      `json:"runtime_policy,omitempty"`
+}
+
+// RuntimePolicyConfig 定义运行时 timeout、容量和成本配置。
+// 保持在 config 包内，避免 config 反向依赖 runtimepolicy 包。
+type RuntimePolicyConfig struct {
+	LLMCallTimeout      time.Duration `json:"llm_call_timeout,omitempty"`
+	ToolTimeout         time.Duration `json:"tool_timeout,omitempty"`
+	TaskTimeout         time.Duration `json:"task_timeout,omitempty"`
+	SpawnAgentTimeout   time.Duration `json:"spawn_agent_timeout,omitempty"`
+	ACPPromptTimeout    time.Duration `json:"acp_prompt_timeout,omitempty"`
+	ACPReconnectTimeout time.Duration `json:"acp_reconnect_timeout,omitempty"`
+	SubagentMaxTurns    int           `json:"subagent_max_turns,omitempty"`
+	SubagentMaxDepth    int           `json:"subagent_max_depth,omitempty"`
+	PerSessionParallel  int           `json:"per_session_parallel,omitempty"`
+	GlobalWorkers       int           `json:"global_workers,omitempty"`
+	MaxSessionCostUSD   float64       `json:"max_session_cost_usd,omitempty"`
 }
 
 // SpecDrivenConfig 是 spec-driven cognition Phase 2 的总配置。

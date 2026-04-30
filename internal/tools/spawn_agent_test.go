@@ -41,7 +41,7 @@ func TestRegisterSpawnAgent(t *testing.T) {
 
 	spawner := &mockAgentSpawner{}
 	executor := &mockTaskExecutor{}
-	registerSpawnAgent(host, executor, spawner, logger)
+	registerSpawnAgent(host, executor, spawner, logger, nil, 0)
 
 	// 验证工具已注册
 	tools := host.ListTools()
@@ -67,7 +67,7 @@ func TestSpawnAgent_MasterCanCall(t *testing.T) {
 			return "任务执行完成: " + instruction, nil
 		},
 	}
-	registerSpawnAgent(host, executor, spawner, logger)
+	registerSpawnAgent(host, executor, spawner, logger, nil, 0)
 
 	ctx := WithToolContext(context.Background(), &ToolContext{
 		CallerType: CallerMaster,
@@ -107,7 +107,7 @@ func TestSpawnAgent_NonMasterRejected(t *testing.T) {
 
 	spawner := &mockAgentSpawner{}
 	executor := &mockTaskExecutor{}
-	registerSpawnAgent(host, executor, spawner, logger)
+	registerSpawnAgent(host, executor, spawner, logger, nil, 0)
 
 	// SubAgent 上下文
 	ctx := WithToolContext(context.Background(), &ToolContext{
@@ -141,7 +141,7 @@ func TestSpawnAgent_MissingRequiredFields(t *testing.T) {
 
 	spawner := &mockAgentSpawner{}
 	executor := &mockTaskExecutor{}
-	registerSpawnAgent(host, executor, spawner, logger)
+	registerSpawnAgent(host, executor, spawner, logger, nil, 0)
 
 	ctx := WithToolContext(context.Background(), &ToolContext{
 		CallerType: CallerMaster,
@@ -181,7 +181,7 @@ func TestSpawnAgent_CreateFailure(t *testing.T) {
 		},
 	}
 	executor := &mockTaskExecutor{}
-	registerSpawnAgent(host, executor, spawner, logger)
+	registerSpawnAgent(host, executor, spawner, logger, nil, 0)
 
 	ctx := WithToolContext(context.Background(), &ToolContext{
 		CallerType: CallerMaster,
@@ -213,7 +213,7 @@ func TestSpawnAgent_ExecuteFailure(t *testing.T) {
 			return "", fmt.Errorf("执行超时")
 		},
 	}
-	registerSpawnAgent(host, executor, spawner, logger)
+	registerSpawnAgent(host, executor, spawner, logger, nil, 0)
 
 	ctx := WithToolContext(context.Background(), &ToolContext{
 		CallerType: CallerMaster,
@@ -245,7 +245,7 @@ func TestSpawnAgent_WithToolWhitelist(t *testing.T) {
 			return "done", nil
 		},
 	}
-	registerSpawnAgent(host, executor, spawner, logger)
+	registerSpawnAgent(host, executor, spawner, logger, nil, 0)
 
 	ctx := WithToolContext(context.Background(), &ToolContext{
 		CallerType: CallerMaster,

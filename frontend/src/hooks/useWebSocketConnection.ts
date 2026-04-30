@@ -30,14 +30,18 @@ export function useWebSocketConnection({
   const retryCount = useRef(0);
   const [connected, setConnected] = useState(false);
   const mountedRef = useRef(true);
+  const connectRef = useRef<() => void>(() => {});
 
   // 用 ref 保存最新的回调，避免 connect 的 useCallback 依赖频繁变化
   const onMessageRef = useRef(onMessage);
   const onConnectedRef = useRef(onConnected);
   const onDisconnectedRef = useRef(onDisconnected);
-  onMessageRef.current = onMessage;
-  onConnectedRef.current = onConnected;
-  onDisconnectedRef.current = onDisconnected;
+
+  useEffect(() => {
+    onMessageRef.current = onMessage;
+    onConnectedRef.current = onConnected;
+    onDisconnectedRef.current = onDisconnected;
+  }, [onMessage, onConnected, onDisconnected]);
 
   const connect = useCallback(() => {
     if (!enabled || !url || !mountedRef.current) return;
@@ -88,7 +92,7 @@ export function useWebSocketConnection({
         if (event.code === 4401 && mountedRef.current) {
           refreshToken().then((newToken) => {
             if (newToken && mountedRef.current) {
-              connect();
+              connectRef.current();
             } else {
               window.location.href = '/login';
             }
@@ -106,7 +110,7 @@ export function useWebSocketConnection({
           retryCount.current++;
           clearTimeout(reconnectTimer.current);
           reconnectTimer.current = setTimeout(() => {
-            if (mountedRef.current) connect();
+            if (mountedRef.current) connectRef.current();
           }, delay);
         }
       };
@@ -121,7 +125,7 @@ export function useWebSocketConnection({
         retryCount.current++;
         clearTimeout(reconnectTimer.current);
         reconnectTimer.current = setTimeout(() => {
-          if (mountedRef.current) connect();
+          if (mountedRef.current) connectRef.current();
         }, delay);
       }
     }
@@ -129,6 +133,7 @@ export function useWebSocketConnection({
 
   useEffect(() => {
     mountedRef.current = true;
+    connectRef.current = connect;
     connect();
     return () => {
       mountedRef.current = false;

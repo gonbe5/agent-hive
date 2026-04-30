@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import type { JournalEvent } from '../../types/journal';
 
 interface Props {
@@ -7,6 +8,15 @@ interface Props {
 }
 
 export function ReplayStats({ events, startedAt, endedAt }: Props) {
+  const [liveNow, setLiveNow] = useState(0);
+  const isLive = !!startedAt && !endedAt;
+
+  useEffect(() => {
+    if (!isLive) return;
+    const timer = window.setInterval(() => setLiveNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [isLive]);
+
   const toolCalls = events.filter((e) => e.type === 'tool_call').length;
   const fileChanges = events.filter((e) => e.type === 'file_change').length;
   const decisions = events.filter((e) => e.type === 'decision').length;
@@ -15,8 +25,8 @@ export function ReplayStats({ events, startedAt, endedAt }: Props) {
   let duration = '';
   if (startedAt) {
     const start = new Date(startedAt).getTime();
-    const end = endedAt ? new Date(endedAt).getTime() : Date.now();
-    const secs = Math.floor((end - start) / 1000);
+    const end = endedAt ? new Date(endedAt).getTime() : liveNow;
+    const secs = Math.max(0, Math.floor((end - start) / 1000));
     const mins = Math.floor(secs / 60);
     const remainSecs = secs % 60;
     duration = mins > 0 ? `${mins}m${remainSecs}s` : `${remainSecs}s`;

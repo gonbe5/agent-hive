@@ -26,7 +26,7 @@ export function Login() {
       if (!enabled) navigate('/', { replace: true });
     };
     init();
-  }, [authEnabled]);
+  }, [authEnabled, checkAuthEnabled, navigate]);
 
   // 加载 provider 列表
   useEffect(() => {
@@ -35,7 +35,7 @@ export function Login() {
       setProviders(p);
       setLoadingProviders(false);
     });
-  }, [authEnabled]);
+  }, [authEnabled, fetchProviders]);
 
   // OAuth 按钮点击 → 跳转后端
   const handleOAuth = (providerName: string) => {

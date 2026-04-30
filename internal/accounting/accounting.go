@@ -15,6 +15,8 @@ type CostTracker interface {
 	GetTotalCost(ctx context.Context, filter CostFilter) (*CostSummary, error)
 	// GetCostByUser 按用户分组的成本汇总
 	GetCostByUser(ctx context.Context) ([]UserCost, error)
+	// GetQualityCost 获取质量维度成本汇总
+	GetQualityCost(ctx context.Context) (*QualityCostSummary, error)
 	// Cleanup 清理超过 retentionDays 天的历史记录，返回删除行数
 	Cleanup(ctx context.Context, retentionDays int) (int64, error)
 }
@@ -27,6 +29,20 @@ type UsageEntry struct {
 	PromptTokens     int64   `json:"prompt_tokens"`
 	CompletionTokens int64   `json:"completion_tokens"`
 	CostUSD          float64 `json:"cost_usd"` // 本次调用的美元成本（由调用方根据 ModelMeta 计算）
+	TaskType         string  `json:"task_type,omitempty"`
+	QualityCaseID    string  `json:"quality_case_id,omitempty"`
+	PromptVersion    string  `json:"prompt_version,omitempty"`
+	FailureType      string  `json:"failure_type,omitempty"`
+	FinalStatus      string  `json:"final_status,omitempty"`
+}
+
+// UsageMeta 是质量闭环附加在 LLM 用量上的低基数字段。
+type UsageMeta struct {
+	TaskType      string
+	QualityCaseID string
+	PromptVersion string
+	FailureType   string
+	FinalStatus   string
 }
 
 // CostSummary 成本汇总
@@ -53,8 +69,8 @@ type CostFilter struct {
 	SessionID string     `json:"session_id,omitempty"` // 按会话过滤（空=全部）
 	UserID    string     `json:"user_id,omitempty"`    // Phase 5: 新增，用于按用户查询
 	Model     string     `json:"model,omitempty"`      // 按模型过滤（空=全部）
-	Since     *time.Time `json:"since,omitempty"`       // 起始时间（nil=不限）
-	Until     *time.Time `json:"until,omitempty"`       // 截止时间（nil=不限）
+	Since     *time.Time `json:"since,omitempty"`      // 起始时间（nil=不限）
+	Until     *time.Time `json:"until,omitempty"`      // 截止时间（nil=不限）
 }
 
 // CalcCost 根据模型定价计算单次调用成本
@@ -70,4 +86,22 @@ type UserCost struct {
 	CompletionTokens int64   `json:"completion_tokens"`
 	CostUSD          float64 `json:"cost_usd"`
 	RequestCount     int64   `json:"request_count"`
+}
+
+// QualityCostSummary 按质量闭环维度汇总 LLM 成本。
+type QualityCostSummary struct {
+	ByTaskType      map[string]ModelCost `json:"by_task_type"`
+	ByQualityCase   map[string]ModelCost `json:"by_quality_case"`
+	ByPromptVersion map[string]ModelCost `json:"by_prompt_version"`
+	ByFailureType   map[string]ModelCost `json:"by_failure_type"`
+	ByFinalStatus   map[string]ModelCost `json:"by_final_status"`
+	TopQualityCases []QualityCaseCost    `json:"top_quality_cases"`
+}
+
+// QualityCaseCost 是质量用例维度的成本排行。
+type QualityCaseCost struct {
+	QualityCaseID string  `json:"quality_case_id"`
+	Tokens        int64   `json:"tokens"`
+	CostUSD       float64 `json:"cost_usd"`
+	RequestCount  int64   `json:"request_count"`
 }

@@ -231,6 +231,10 @@ CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id);
 CREATE INDEX IF NOT EXISTS idx_memories_accessed ON memories(accessed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_search ON memories USING GIN(search_vector);
+CREATE INDEX IF NOT EXISTS idx_memories_governance_expires
+	ON memories (((metadata->'governance'->>'expires_at')));
+CREATE INDEX IF NOT EXISTS idx_memories_governance_source
+	ON memories (((metadata->'governance'->>'source')));
 
 -- 自动更新 search_vector 的触发器
 CREATE OR REPLACE FUNCTION memories_search_update() RETURNS trigger AS $$
@@ -249,16 +253,23 @@ CREATE TRIGGER memories_search_trigger
 CREATE TABLE IF NOT EXISTS usage_records (
 	id               BIGSERIAL PRIMARY KEY,
 	session_id       TEXT NOT NULL,
+	user_id          TEXT NOT NULL DEFAULT '',
 	model            TEXT NOT NULL,
 	prompt_tokens    BIGINT NOT NULL DEFAULT 0,
 	completion_tokens BIGINT NOT NULL DEFAULT 0,
 	cost_usd         DOUBLE PRECISION NOT NULL DEFAULT 0,
+	task_type        TEXT NOT NULL DEFAULT '',
+	quality_case_id  TEXT NOT NULL DEFAULT '',
+	prompt_version   TEXT NOT NULL DEFAULT '',
+	failure_type     TEXT NOT NULL DEFAULT '',
+	final_status     TEXT NOT NULL DEFAULT '',
 	created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_usage_records_session ON usage_records(session_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_usage_records_model ON usage_records(model, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_usage_records_created ON usage_records(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_records_quality_case ON usage_records(quality_case_id, created_at DESC) WHERE quality_case_id != '';
 
 -- 可观测性：Traces 表（P2-6）
 CREATE TABLE IF NOT EXISTS hive_traces (
@@ -310,6 +321,38 @@ CREATE INDEX IF NOT EXISTS idx_logs_level      ON hive_logs(level);
 CREATE INDEX IF NOT EXISTS idx_logs_trace_id   ON hive_logs(trace_id);
 CREATE INDEX IF NOT EXISTS idx_logs_session_id ON hive_logs(session_id);
 CREATE INDEX IF NOT EXISTS idx_logs_ts         ON hive_logs(ts DESC);
+
+-- Agent Quality regression candidate 表
+CREATE TABLE IF NOT EXISTS agentquality_candidates (
+	id               TEXT PRIMARY KEY,
+	status           TEXT NOT NULL DEFAULT 'new',
+	route            TEXT NOT NULL DEFAULT '',
+	session_id       TEXT NOT NULL DEFAULT '',
+	replay_ref       TEXT NOT NULL DEFAULT '',
+	input            TEXT NOT NULL DEFAULT '',
+	case_json        JSONB NOT NULL DEFAULT '{}',
+	failure_type     TEXT NOT NULL DEFAULT '',
+	risk             TEXT NOT NULL DEFAULT 'safe',
+	fingerprint      TEXT NOT NULL DEFAULT '',
+	source_event     JSONB NOT NULL DEFAULT '{}',
+	suggestions_json JSONB NOT NULL DEFAULT '[]',
+	review_note      TEXT NOT NULL DEFAULT '',
+	created_by       TEXT NOT NULL DEFAULT '',
+	reviewed_by      TEXT NOT NULL DEFAULT '',
+	promoted_case_id TEXT NOT NULL DEFAULT '',
+	created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	reviewed_at      TIMESTAMPTZ
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agentquality_candidates_fingerprint
+	ON agentquality_candidates(fingerprint)
+	WHERE status IN ('new', 'reviewing', 'approved');
+CREATE INDEX IF NOT EXISTS idx_agentquality_candidates_status_created
+	ON agentquality_candidates(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agentquality_candidates_session
+	ON agentquality_candidates(session_id, created_at DESC)
+	WHERE session_id != '';
 -- 认证 Provider 配置表
 CREATE TABLE IF NOT EXISTS auth_providers (
     name          TEXT PRIMARY KEY,
@@ -699,7 +742,13 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id) WHERE user_id 
 CREATE INDEX IF NOT EXISTS idx_sessions_starred ON sessions(user_id, is_starred) WHERE is_starred = TRUE;
 
 ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS task_type TEXT NOT NULL DEFAULT '';
+ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS quality_case_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS prompt_version TEXT NOT NULL DEFAULT '';
+ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS failure_type TEXT NOT NULL DEFAULT '';
+ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS final_status TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_usage_records_user ON usage_records(user_id, created_at DESC) WHERE user_id != '';
+CREATE INDEX IF NOT EXISTS idx_usage_records_quality_case ON usage_records(quality_case_id, created_at DESC) WHERE quality_case_id != '';
 
 ALTER TABLE hive_traces ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_traces_user ON hive_traces(user_id) WHERE user_id != '';
@@ -709,6 +758,8 @@ CREATE INDEX IF NOT EXISTS idx_logs_user ON hive_logs(user_id) WHERE user_id != 
 
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id) WHERE user_id != '';
+
+ALTER TABLE agentquality_candidates ADD COLUMN IF NOT EXISTS suggestions_json JSONB NOT NULL DEFAULT '[]';
 `
 
 // pgMigrate 初始化 PostgreSQL 数据库表结构

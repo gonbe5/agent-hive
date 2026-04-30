@@ -16,7 +16,7 @@ const PROD_PY = '```python\n# business renderer wraps shiki\nclass Agent:\n    d
 const PROD_TS = '```typescript\ninterface Task {\n  id: number;\n  done: boolean;\n}\n\nconst filterDone = (tasks: Task[]): Task[] =>\n  tasks.filter((t) => t.done);\n```';
 const PROD_MATH = 'Inline $E = mc^2$ and display:\n\n$$\n\\int_0^\\infty e^{-x^2} dx = \\frac{\\sqrt{\\pi}}{2}\n$$';
 
-function App() {
+export function App() {
   return (
     <div>
       <h1 data-testid="title">Streamdown Shiki E2E Fixture</h1>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNodeClient } from '../../hooks/useNodeClient';
 import { useToastStore } from '../../store/toast';
@@ -16,7 +16,7 @@ export function ExternalResourcesSettings() {
   const [, setLoading] = useState(false);
   const [showForm, setShowForm] = useState(false);
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     try {
       const list = await client.listExternalResources();
@@ -26,11 +26,11 @@ export function ExternalResourcesSettings() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [client, t]);
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [loadData]);
 
   const handleDelete = async (name: string) => {
     if (!window.confirm(t('externalResources.deleteConfirm', { name }))) return;

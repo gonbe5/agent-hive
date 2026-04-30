@@ -63,7 +63,7 @@ func NewPgMetricsWriter(pool *pgxpool.Pool, logger *zap.Logger) *PgMetricsWriter
 
 // Record 写入一条指标到 hive_metrics
 func (w *PgMetricsWriter) Record(ctx context.Context, metric Metric) error {
-	labelsJSON, _ := json.Marshal(metric.Labels)
+	labelsJSON, _ := json.Marshal(SanitizeMetricLabels(metric.Name, metric.Labels))
 	ts := metric.Ts
 	if ts.IsZero() {
 		ts = time.Now()

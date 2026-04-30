@@ -2,8 +2,10 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -230,6 +232,112 @@ func TestInjector_InjectContext(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestInjector_InjectContextDetailedGovernance(t *testing.T) {
+	logger := zap.NewNop()
+	now := time.Now()
+	store := &mockMemoryStore{
+		searchResult: &SearchResult{
+			Memories: []MemoryRecord{
+				{
+					ID:       1,
+					UserID:   "user-1",
+					Type:     MemoryTypeUser,
+					Content:  "用户偏好 Go",
+					Metadata: mustGovernance(t, Governance{Source: "summary", Confidence: 0.9}),
+					Score:    0.95,
+				},
+				{
+					ID:       2,
+					UserID:   "user-1",
+					Type:     MemoryTypeProject,
+					Content:  "过期项目背景",
+					Metadata: mustGovernance(t, Governance{Confidence: 0.9, ExpiresAt: now.Add(-time.Hour)}),
+				},
+				{
+					ID:       3,
+					UserID:   "user-1",
+					Type:     MemoryTypeFeedback,
+					Content:  "低置信建议",
+					Metadata: mustGovernance(t, Governance{Confidence: 0.2}),
+				},
+				{
+					ID:       4,
+					UserID:   "other-user",
+					Type:     MemoryTypeReference,
+					Content:  "其他用户记忆",
+					Metadata: mustGovernance(t, Governance{Confidence: 0.9}),
+				},
+			},
+			Total: 4,
+		},
+	}
+
+	inj := NewInjector(store, 2000, 10, logger)
+	got, err := inj.InjectContextDetailed(context.Background(), "Go 语言", "s1", "user-1")
+	if err != nil {
+		t.Fatalf("InjectContextDetailed returned error: %v", err)
+	}
+
+	if !strings.Contains(got.Text, "[user] 用户偏好 Go") {
+		t.Fatalf("Text did not include trusted memory: %s", got.Text)
+	}
+	if strings.Contains(got.Text, "过期项目背景") || strings.Contains(got.Text, "低置信建议") || strings.Contains(got.Text, "其他用户记忆") {
+		t.Fatalf("Text included filtered memories: %s", got.Text)
+	}
+	if len(got.Memories) != 1 || got.Memories[0].ID != 1 {
+		t.Fatalf("Memories = %+v, want only memory 1", got.Memories)
+	}
+	if got.Memories[0].Confidence != 0.9 || got.Memories[0].Source != "summary" {
+		t.Fatalf("Injected metadata = %+v, want confidence/source", got.Memories[0])
+	}
+	if got.SkippedExpired != 1 {
+		t.Fatalf("SkippedExpired = %d, want 1", got.SkippedExpired)
+	}
+	if got.SkippedLowTrust != 1 {
+		t.Fatalf("SkippedLowTrust = %d, want 1", got.SkippedLowTrust)
+	}
+	if got.SkippedCrossUser != 1 {
+		t.Fatalf("SkippedCrossUser = %d, want 1", got.SkippedCrossUser)
+	}
+	if got.EstimatedTokens <= 0 {
+		t.Fatalf("EstimatedTokens = %d, want > 0", got.EstimatedTokens)
+	}
+}
+
+func TestInjector_InjectContextDetailedRecordsTokenBudgetSkips(t *testing.T) {
+	store := &mockMemoryStore{
+		searchResult: &SearchResult{
+			Memories: []MemoryRecord{
+				{ID: 1, UserID: "user-1", Type: MemoryTypeUser, Content: "短记忆"},
+				{ID: 2, UserID: "user-1", Type: MemoryTypeProject, Content: strings.Repeat("很长的记忆内容", 200)},
+				{ID: 3, UserID: "user-1", Type: MemoryTypeFeedback, Content: strings.Repeat("另一个很长的记忆内容", 200)},
+			},
+			Total: 3,
+		},
+	}
+
+	inj := NewInjector(store, 20, 10, zap.NewNop())
+	got, err := inj.InjectContextDetailed(context.Background(), "查询", "s1", "user-1")
+	if err != nil {
+		t.Fatalf("InjectContextDetailed returned error: %v", err)
+	}
+
+	if got.SkippedTokenBudget != 2 {
+		t.Fatalf("SkippedTokenBudget = %d, want 2", got.SkippedTokenBudget)
+	}
+	if got.SkippedTotal() != 2 {
+		t.Fatalf("SkippedTotal() = %d, want 2", got.SkippedTotal())
+	}
+	if len(got.SkippedMemoryIDs) != 2 || got.SkippedMemoryIDs[0] != 2 || got.SkippedMemoryIDs[1] != 3 {
+		t.Fatalf("SkippedMemoryIDs = %#v, want [2 3]", got.SkippedMemoryIDs)
+	}
+}
+
+func mustGovernance(t *testing.T, g Governance) json.RawMessage {
+	t.Helper()
+	return EncodeGovernance(nil, g)
 }
 
 func TestEstimateTokens(t *testing.T) {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus, Trash2, Check, X } from 'lucide-react';
 import { useNodeClient } from '../../hooks/useNodeClient';
@@ -18,7 +18,7 @@ export function AuthProviders() {
   const [newType, setNewType] = useState('feishu');
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const list = await client.adminListProviders();
@@ -28,9 +28,9 @@ export function AuthProviders() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [client, addToast]);
 
-  useEffect(() => { load(); }, [client]);
+  useEffect(() => { load(); }, [load]);
 
   const handleCreate = async () => {
     if (!newName.trim()) { addToast('error', 'Provider 名称不能为空'); return; }

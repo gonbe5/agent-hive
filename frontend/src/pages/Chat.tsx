@@ -19,6 +19,7 @@ export function Chat() {
   const navigate = useNavigate();
   const location = useLocation();
   const client = useNodeClient();
+  const pendingMessage = (location.state as { pendingMessage?: string } | null)?.pendingMessage;
 
   const currentSession = useSessionStore((s) => s.currentSession);
   const fetchSession = useSessionStore((s) => s.fetchSession);
@@ -53,13 +54,12 @@ export function Chat() {
         useHITLStore.getState().fetchPending(client, id);
 
         // 从着陆页带过来的待发消息，自动发送
-        const pending = (location.state as { pendingMessage?: string } | null)?.pendingMessage;
-        if (pending) {
+        if (pendingMessage) {
           // 清除 state 避免刷新后重复发送
           window.history.replaceState({}, '');
-            sendMessage(client, id, pending);
+            sendMessage(client, id, pendingMessage);
             // 用消息内容自动命名会话
-            const title = pending.trim().slice(0, 20);
+            const title = pendingMessage.trim().slice(0, 20);
             if (title) {
               client.updateSession(id, { name: title }).catch(() => {});
               updateSessionName(id, title);
@@ -73,7 +73,7 @@ export function Chat() {
         useCanvasStore.getState().closeAll();
         useTaskProgressStore.getState().clear();
       };
-    }, [id, client, fetchSession, loadMessages, clearMessages, loadModels]);
+    }, [id, client, fetchSession, loadMessages, clearMessages, loadModels, pendingMessage, sendMessage, updateSessionName]);
 
   // 会话被删除后自动跳转回会话列表
   useEffect(() => {
@@ -96,7 +96,7 @@ export function Chat() {
       }
       sendMessage(client, id, content, options);
     }
-  }, [id, client, sendMessage, messages.length, currentSession, updateSessionName]);
+  }, [id, client, sendMessage, messages.length, updateSessionName]);
 
   const handleClear = useCallback(async () => {
     if (id && confirm(t('chat.clearConfirm'))) {

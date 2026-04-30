@@ -130,6 +130,9 @@ func main() {
 	if sc.SkillStore != nil {
 		server.SetSkillStore(sc.SkillStore)
 	}
+	if sc.QualityCandidateStore != nil {
+		server.SetQualityCandidateStore(sc.QualityCandidateStore)
+	}
 
 	// 注册微信协议热重载回调
 	if sc.ChannelRouter != nil {

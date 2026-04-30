@@ -1,0 +1,18 @@
+{
+  "id": "mc01_relevant_memory",
+  "name": "相关可信记忆应注入",
+  "query": "我的默认 Go 测试命令是什么",
+  "user_id": "u1",
+  "memories": [
+    {
+      "id": 1,
+      "user_id": "u1",
+      "type": "user",
+      "content": "默认 Go 测试命令是 env GOCACHE=/tmp/go-build go test ./... -count=1",
+      "confidence": 0.95,
+      "source": "user_message"
+    }
+  ],
+  "want_injected_ids": [1],
+  "required": true
+}

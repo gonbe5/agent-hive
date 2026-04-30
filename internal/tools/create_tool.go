@@ -27,7 +27,8 @@ var builtinToolNames = map[string]bool{
 	"read_file": true, "write_file": true, "glob": true, "grep": true,
 	"bash": true, "edit": true, "ls": true, "multi_edit": true,
 	"web_search": true, "web_fetch": true, "batch": true, "apply_patch": true,
-	"memory": true, "question": true, "task": true, "parallel_dispatch": true,
+	"tool_search": true,
+	"memory":      true, "question": true, "task": true, "parallel_dispatch": true,
 	"spawn_agent": true, "create_tool": true, "remove_tool": true,
 	"skill": true, "send_im_message": true,
 	// LSP 工具

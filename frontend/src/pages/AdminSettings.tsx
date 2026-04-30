@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNodeClient } from '../hooks/useNodeClient';
 import { useAppStore } from '../store/app';
@@ -11,7 +11,6 @@ import { PermissionRulesSettings } from '../components/settings/PermissionRulesS
 import { AgentTimeoutSettings } from '../components/settings/AgentTimeoutSettings';
 import { MCPServersSettings } from '../components/settings/MCPServersSettings';
 import { ExecRulesSettings } from '../components/settings/ExecRulesSettings';
-import { useEffect } from 'react';
 import type { Health } from '../types/api';
 
 type TabType = 'system' | 'security' | 'integrations';
@@ -29,7 +28,7 @@ export function AdminSettings() {
       const msg = e instanceof Error ? e.message : t('settings.healthFetchFailed', '获取节点状态失败');
       addToast('error', msg);
     });
-  }, [client]);
+  }, [client, addToast, t]);
 
   const tabs: { key: TabType; label: string }[] = [
     { key: 'system', label: t('adminSettings.system') },

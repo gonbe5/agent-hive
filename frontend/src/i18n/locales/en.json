@@ -18,6 +18,7 @@
     "adminLLM": "LLM Models",
     "adminAuthProviders": "Auth Providers",
     "adminPrompts": "Prompt Manager",
+    "adminQualityCandidates": "Quality Candidates",
     "adminSettings": "Settings",
     "backToChat": "Back to Chat",
     "preferences": "Preferences",

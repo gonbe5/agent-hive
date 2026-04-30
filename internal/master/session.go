@@ -2,12 +2,15 @@ package master
 
 import (
 	"context"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/chef-guo/agents-hive/internal/imctx"
 	"github.com/chef-guo/agents-hive/internal/llm"
+	"github.com/chef-guo/agents-hive/internal/memory"
 	"github.com/chef-guo/agents-hive/internal/specdriven"
 )
 
@@ -57,6 +60,8 @@ type SessionState struct {
 	pendingReasoningEffort string                  `json:"-"`
 	pendingModelOverride   string                  `json:"-"`
 	pendingIMContext       *imctx.IMMessageContext `json:"-"`
+	pendingMemoryInjection memory.InjectionResult  `json:"-"`
+	discoveredTools        map[string]bool         `json:"-"`
 
 	// 终止态：用于阻止已取消任务的陈旧写回。
 	terminated         bool      `json:"-"`
@@ -174,7 +179,68 @@ func (s *SessionState) ClearPendingData() {
 	s.pendingReasoningEffort = ""
 	s.pendingModelOverride = ""
 	s.pendingIMContext = nil
+	s.pendingMemoryInjection = memory.InjectionResult{}
 	s.mu.Unlock()
+}
+
+// SetQualityMemoryInjection 记录当前 turn 实际注入的 memory 构成，供质量事件读取。
+func (s *SessionState) SetQualityMemoryInjection(result memory.InjectionResult) {
+	s.mu.Lock()
+	s.pendingMemoryInjection = result
+	s.mu.Unlock()
+}
+
+// ConsumeQualityMemoryInjection 一次性消费当前 turn 的 memory 注入构成，避免跨 turn 污染。
+func (s *SessionState) ConsumeQualityMemoryInjection() memory.InjectionResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := s.pendingMemoryInjection
+	s.pendingMemoryInjection = memory.InjectionResult{}
+	return result
+}
+
+// RecordDiscoveredTools 记录本会话通过 tool_search 显式发现的扩展工具。
+func (s *SessionState) RecordDiscoveredTools(names []string) {
+	if s == nil || len(names) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.discoveredTools == nil {
+		s.discoveredTools = make(map[string]bool, len(names))
+	}
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		s.discoveredTools[name] = true
+	}
+}
+
+// IsToolDiscovered 返回工具是否已在当前会话中被 tool_search 发现。
+func (s *SessionState) IsToolDiscovered(name string) bool {
+	if s == nil || name == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.discoveredTools[name]
+}
+
+// DiscoveredTools 返回当前会话已发现工具名，按名称排序便于测试和调试。
+func (s *SessionState) DiscoveredTools() []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]string, 0, len(s.discoveredTools))
+	for name := range s.discoveredTools {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ConsumePendingIMContext 一次性消费 pendingIMContext（第二次调用返回 nil）

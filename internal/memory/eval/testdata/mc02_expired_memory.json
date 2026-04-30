@@ -1,0 +1,20 @@
+{
+  "id": "mc02_expired_memory",
+  "name": "过期记忆不得注入",
+  "query": "部署环境是什么",
+  "user_id": "u1",
+  "memories": [
+    {
+      "id": 2,
+      "user_id": "u1",
+      "type": "project",
+      "content": "旧生产环境是 staging-old",
+      "confidence": 0.9,
+      "expires_at": "2026-01-01T00:00:00Z",
+      "source": "summary"
+    }
+  ],
+  "want_skipped_ids": [2],
+  "forbidden_text": ["旧生产环境"],
+  "required": true
+}

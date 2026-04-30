@@ -29,6 +29,14 @@ import type {
   LLMModelRecord,
   AdminSkillItem,
   AdminSkillDetail,
+  QualityCandidateStatus,
+  QualityCandidateCreateRequest,
+  QualityCandidateUpdateRequest,
+  QualityCandidatesResponse,
+  QualityCandidateRecord,
+  PromptSmokeEvalRequest,
+  PromptSmokeEvalResponse,
+  UsageQualityCost,
 } from '../types/api';
 import type { JournalResponse, JournalStatsResponse } from '../types/journal';
 import { apiClient, ApiClient } from './client';
@@ -92,6 +100,7 @@ export interface NodeClient {
   adminUpdateQuota(id: string, tokenQuota: number): Promise<void>;
   adminGetUsageSummary(): Promise<UsageSummary>;
   adminGetUsageByModel(): Promise<{ by_model: Record<string, { tokens: number; cost_usd: number }> }>;
+  adminGetUsageQuality(): Promise<UsageQualityCost>;
   adminListProviders(): Promise<AdminProvider[]>;
   adminCreateProvider(body: Partial<AdminProvider> & { name: string; provider_type: string }): Promise<void>;
   adminUpdateProvider(name: string, body: Partial<AdminProvider>): Promise<void>;
@@ -102,6 +111,7 @@ export interface NodeClient {
   // Prompt 管理
   adminListPrompts(page?: number, size?: number): Promise<{ items: PromptRecord[]; total: number; page: number; size: number }>;
   adminGetPrompt(key: string, language?: string): Promise<{ key: string; language: string; content: string }>;
+  adminPromptSmokeEval(req: PromptSmokeEvalRequest): Promise<PromptSmokeEvalResponse>;
   adminUpsertPrompt(key: string, language: string, content: string): Promise<void>;
   adminDeletePrompt(key: string, language: string): Promise<void>;
   // LLM Provider 管理
@@ -119,6 +129,10 @@ export interface NodeClient {
   adminGetSkill(name: string): Promise<AdminSkillDetail>;
   adminUpsertSkill(name: string, content: string, expectRevision?: number): Promise<void>;
   adminDeleteSkill(name: string): Promise<void>;
+  adminListQualityCandidates(filter?: { status?: QualityCandidateStatus | ''; route?: string; page?: number; size?: number }): Promise<QualityCandidatesResponse>;
+  adminCreateQualityCandidate(body: QualityCandidateCreateRequest): Promise<QualityCandidateRecord>;
+  adminUpdateQualityCandidate(id: string, body: QualityCandidateUpdateRequest): Promise<QualityCandidateRecord>;
+  adminExportQualityCandidate(id: string): Promise<QualityCandidateRecord['golden_case']>;
 }
 
 // 本地节点客户端 - 直接调用 /api/v1/*
@@ -339,6 +353,10 @@ export class LocalNodeClient implements NodeClient {
     return this.client.get('/api/v1/admin/usage/by-model');
   }
 
+  adminGetUsageQuality(): Promise<UsageQualityCost> {
+    return this.client.get('/api/v1/admin/usage/quality');
+  }
+
   async adminListProviders(): Promise<AdminProvider[]> {
     const res = await this.client.get<AdminProvidersResponse>('/api/v1/admin/auth/providers');
     return res.providers ?? [];
@@ -372,6 +390,10 @@ export class LocalNodeClient implements NodeClient {
 
   async adminGetPrompt(key: string, language = ''): Promise<{ key: string; language: string; content: string }> {
     return this.client.get(`/api/v1/admin/prompts/${key}?language=${encodeURIComponent(language)}`);
+  }
+
+  async adminPromptSmokeEval(req: PromptSmokeEvalRequest): Promise<PromptSmokeEvalResponse> {
+    return this.client.post('/api/v1/admin/quality/prompt-smoke', req);
   }
 
   async adminUpsertPrompt(key: string, language: string, content: string): Promise<void> {
@@ -431,5 +453,27 @@ export class LocalNodeClient implements NodeClient {
 
   adminDeleteSkill(name: string): Promise<void> {
     return this.client.delete(`/api/v1/admin/skills/${encodeURIComponent(name)}`);
+  }
+
+  adminListQualityCandidates(filter: { status?: QualityCandidateStatus | ''; route?: string; page?: number; size?: number } = {}): Promise<QualityCandidatesResponse> {
+    const params = new URLSearchParams({
+      page: String(filter.page ?? 1),
+      size: String(filter.size ?? 50),
+    });
+    if (filter.status) params.set('status', filter.status);
+    if (filter.route) params.set('route', filter.route);
+    return this.client.get(`/api/v1/admin/quality/candidates?${params}`);
+  }
+
+  adminCreateQualityCandidate(body: QualityCandidateCreateRequest): Promise<QualityCandidateRecord> {
+    return this.client.post('/api/v1/admin/quality/candidates', body);
+  }
+
+  adminUpdateQualityCandidate(id: string, body: QualityCandidateUpdateRequest): Promise<QualityCandidateRecord> {
+    return this.client.patch(`/api/v1/admin/quality/candidates/${encodeURIComponent(id)}`, body);
+  }
+
+  adminExportQualityCandidate(id: string): Promise<QualityCandidateRecord['golden_case']> {
+    return this.client.get(`/api/v1/admin/quality/candidates/${encodeURIComponent(id)}/golden-case`);
   }
 }

@@ -4,17 +4,19 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
 
 // Injector 将相关记忆注入到 LLM 上下文
 type Injector struct {
-	store     MemoryStore
-	hybrid    *HybridSearcher // 混合搜索引擎（可选）
-	maxTokens int             // 注入的最大 token 数
-	topK      int             // 最大记忆条数
-	logger    *zap.Logger
+	store         MemoryStore
+	hybrid        *HybridSearcher // 混合搜索引擎（可选）
+	maxTokens     int             // 注入的最大 token 数
+	topK          int             // 最大记忆条数
+	minConfidence float64         // 最低注入置信度
+	logger        *zap.Logger
 }
 
 // NewInjector 创建记忆注入器
@@ -26,10 +28,11 @@ func NewInjector(store MemoryStore, maxTokens, topK int, logger *zap.Logger) *In
 		topK = 10
 	}
 	return &Injector{
-		store:     store,
-		maxTokens: maxTokens,
-		topK:      topK,
-		logger:    logger,
+		store:         store,
+		maxTokens:     maxTokens,
+		topK:          topK,
+		minConfidence: 0.5,
+		logger:        logger,
 	}
 }
 
@@ -38,11 +41,26 @@ func (inj *Injector) SetHybridSearcher(h *HybridSearcher) {
 	inj.hybrid = h
 }
 
+// SetMinConfidence 设置 memory 注入最低置信度。
+func (inj *Injector) SetMinConfidence(v float64) {
+	if v <= 0 || v > 1 {
+		return
+	}
+	inj.minConfidence = v
+}
+
 // InjectContext 基于用户消息查询相关记忆，返回注入文本
 // 返回空字符串表示无相关记忆
 func (inj *Injector) InjectContext(ctx context.Context, userMessage string, sessionID string, userID string) (string, error) {
+	result, err := inj.InjectContextDetailed(ctx, userMessage, sessionID, userID)
+	return result.Text, err
+}
+
+// InjectContextDetailed 基于用户消息查询相关记忆，返回结构化注入结果。
+func (inj *Injector) InjectContextDetailed(ctx context.Context, userMessage string, sessionID string, userID string) (InjectionResult, error) {
+	var out InjectionResult
 	if userMessage == "" {
-		return "", nil
+		return out, nil
 	}
 
 	// 搜索相关记忆（优先使用混合搜索）
@@ -78,13 +96,13 @@ func (inj *Injector) InjectContext(ctx context.Context, userMessage string, sess
 		})
 		if err != nil {
 			inj.logger.Warn("搜索相关记忆失败", zap.Error(err))
-			return "", err
+			return out, err
 		}
 	}
 
 	if result == nil || len(result.Memories) == 0 {
 		inj.logger.Debug("无相关记忆", zap.String("query", userMessage))
-		return "", nil
+		return out, nil
 	}
 
 	// 格式化为 Markdown 注入文本
@@ -92,8 +110,26 @@ func (inj *Injector) InjectContext(ctx context.Context, userMessage string, sess
 	sb.WriteString("## 相关记忆\n\n")
 	headerTokens := estimateTokens(sb.String())
 	totalTokens := headerTokens
+	now := time.Now()
 
 	for _, mem := range result.Memories {
+		g := DecodeGovernance(mem.Metadata)
+		if userID != "" && mem.UserID != "" && mem.UserID != userID {
+			out.SkippedCrossUser++
+			out.SkippedMemoryIDs = append(out.SkippedMemoryIDs, mem.ID)
+			continue
+		}
+		if !g.ExpiresAt.IsZero() && now.After(g.ExpiresAt) {
+			out.SkippedExpired++
+			out.SkippedMemoryIDs = append(out.SkippedMemoryIDs, mem.ID)
+			continue
+		}
+		if g.Confidence > 0 && g.Confidence < inj.minConfidence {
+			out.SkippedLowTrust++
+			out.SkippedMemoryIDs = append(out.SkippedMemoryIDs, mem.ID)
+			continue
+		}
+
 		line := fmt.Sprintf("- [%s] %s\n", mem.Type, mem.Content)
 		lineTokens := estimateTokens(line)
 
@@ -103,24 +139,34 @@ func (inj *Injector) InjectContext(ctx context.Context, userMessage string, sess
 				zap.Int("current_tokens", totalTokens),
 				zap.Int("max_tokens", inj.maxTokens),
 			)
-			break
+			out.SkippedTokenBudget++
+			out.SkippedMemoryIDs = append(out.SkippedMemoryIDs, mem.ID)
+			continue
 		}
 
 		sb.WriteString(line)
 		totalTokens += lineTokens
+		out.Memories = append(out.Memories, InjectedMemory{
+			ID:         mem.ID,
+			Type:       mem.Type,
+			Score:      mem.Score,
+			Confidence: g.Confidence,
+			Source:     g.Source,
+		})
 	}
 
 	// 只有标题没有实际内容时返回空
 	if totalTokens <= headerTokens {
-		return "", nil
+		return out, nil
 	}
 
-	injected := sb.String()
+	out.Text = sb.String()
+	out.EstimatedTokens = totalTokens
 	inj.logger.Debug("注入相关记忆",
-		zap.Int("count", len(result.Memories)),
+		zap.Int("count", len(out.Memories)),
 		zap.Int("estimated_tokens", totalTokens),
 	)
-	return injected, nil
+	return out, nil
 }
 
 // estimateTokens 粗略估算文本的 token 数（约 4 个字符 = 1 token）

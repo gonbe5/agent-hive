@@ -1,0 +1,13 @@
+{
+  "id": "aq03_skill_route",
+  "name": "明确命中 skill 时应走 skill 工具",
+  "route": "web",
+  "input": "使用 code-review skill 检查最近的 Go 改动",
+  "expected_tools": ["skill"],
+  "expected_skills": ["code-review"],
+  "expected_status": "pass",
+  "failure_type": "skill",
+  "risk": "safe",
+  "required": true,
+  "notes": "防止模型绕过已注册技能硬做"
+}

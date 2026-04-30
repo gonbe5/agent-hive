@@ -13,16 +13,23 @@ import (
 
 	"github.com/chef-guo/agents-hive/internal/errs"
 	"github.com/chef-guo/agents-hive/internal/subagent"
+	"github.com/chef-guo/agents-hive/internal/tools"
 )
+
+type acpPromptClient interface {
+	Prompt(context.Context, acp.PromptRequest) (acp.PromptResponse, error)
+}
 
 // RemoteACPAgent 将远程 ACP Agent 包装为本地 subagent.Agent
 type RemoteACPAgent struct {
 	cfg       RemoteAgentConfig
-	conn      *acp.ClientSideConnection
+	conn      acpPromptClient
+	done      <-chan struct{}
 	transport *Transport
 	sessionID acp.SessionId
 	mailbox   *subagent.SubAgentMailbox
 	logger    *zap.Logger
+	observer  tools.DelegationObserver
 	status    subagent.AgentStatus
 	startTime time.Time
 	mu        sync.RWMutex
@@ -37,15 +44,33 @@ func NewRemoteACPAgent(
 	sessionID acp.SessionId,
 	logger *zap.Logger,
 ) *RemoteACPAgent {
+	var done <-chan struct{}
+	if conn != nil {
+		done = conn.Done()
+	}
 	return &RemoteACPAgent{
 		cfg:       cfg,
 		conn:      conn,
+		done:      done,
 		transport: transport,
 		sessionID: sessionID,
 		mailbox:   subagent.NewMailbox(16),
 		logger:    logger.With(zap.String("remote_agent", cfg.Name)),
 		status:    subagent.StatusStopped,
 	}
+}
+
+func NewRemoteACPAgentWithPromptClient(
+	cfg RemoteAgentConfig,
+	client acpPromptClient,
+	sessionID acp.SessionId,
+	logger *zap.Logger,
+	observer tools.DelegationObserver,
+) *RemoteACPAgent {
+	a := NewRemoteACPAgent(cfg, nil, nil, sessionID, logger)
+	a.conn = client
+	a.observer = observer
+	return a
 }
 
 // ID 返回 agent 的唯一标识
@@ -115,14 +140,14 @@ func (a *RemoteACPAgent) Run(ctx context.Context) {
 			a.setStatus(subagent.StatusStopped)
 			return
 
-		case <-a.conn.Done():
-			a.logger.Warn("远程 ACP Agent 连接已断开")
-			a.setStatus(subagent.StatusError)
-			return
-
 		case <-ctx.Done():
 			a.logger.Info("远程 ACP Agent 正在停止（context 已取消）")
 			a.setStatus(subagent.StatusStopped)
+			return
+
+		case <-a.done:
+			a.logger.Warn("远程 ACP Agent 连接已断开")
+			a.setStatus(subagent.StatusError)
 			return
 		}
 	}
@@ -152,6 +177,11 @@ func (a *RemoteACPAgent) handleTask(ctx context.Context, req subagent.TaskReques
 
 	promptResp, err := a.conn.Prompt(ctx, promptReq)
 	if err != nil {
+		stopReason := "transport_error"
+		if ctx.Err() != nil {
+			stopReason = "timeout"
+		}
+		a.recordDelegation(ctx, req, "failed", "runtime", stopReason, err.Error())
 		return subagent.TaskResponse{
 			Status: "failed",
 			Error:  fmt.Sprintf("ACP Prompt 调用失败: %v", err),
@@ -167,11 +197,31 @@ func (a *RemoteACPAgent) handleTask(ctx context.Context, req subagent.TaskReques
 	if promptResp.StopReason == acp.StopReasonCancelled || promptResp.StopReason == acp.StopReasonRefusal {
 		status = "failed"
 	}
+	failureType := ""
+	if status == "failed" {
+		failureType = "runtime"
+	}
+	a.recordDelegation(ctx, req, status, failureType, string(promptResp.StopReason), "")
 
 	return subagent.TaskResponse{
 		Status: status,
 		Result: resultJSON,
 	}
+}
+
+func (a *RemoteACPAgent) recordDelegation(ctx context.Context, req subagent.TaskRequest, status string, failureType string, stopReason string, errText string) {
+	if a.observer == nil {
+		return
+	}
+	a.observer.RecordDelegation(ctx, tools.DelegationEvent{
+		SessionID:   req.SessionID,
+		AgentID:     a.cfg.Name,
+		AgentType:   "acp",
+		Status:      status,
+		FailureType: failureType,
+		StopReason:  stopReason,
+		Error:       errText,
+	})
 }
 
 // SendTask 向远程 Agent 发送任务并等待响应

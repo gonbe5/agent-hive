@@ -153,23 +153,58 @@ func (m *Master) buildSystemPromptHardcoded() string {
 	return b.String()
 }
 
+type systemPromptBuild struct {
+	Content string
+	Metas   []i18n.PromptMeta
+}
+
+func (b systemPromptBuild) Versions() []string {
+	out := make([]string, 0, len(b.Metas))
+	for _, meta := range b.Metas {
+		out = append(out, meta.Key+"@"+meta.Source+"@"+meta.Hash)
+	}
+	return out
+}
+
 func (m *Master) buildSystemPrompt(tools []mcphost.ToolDefinition) string {
+	return m.buildSystemPromptWithMeta(tools).Content
+}
+
+func (m *Master) buildSystemPromptWithMeta(tools []mcphost.ToolDefinition) systemPromptBuild {
 	var b strings.Builder
+	var metas []i18n.PromptMeta
 
 	// nil 防御：promptLoader 未注入时使用硬编码默认值
 	if m.promptLoader == nil {
-		b.WriteString(m.buildSystemPromptHardcoded())
+		hardcoded := m.buildSystemPromptHardcoded()
+		b.WriteString(hardcoded)
+		metas = append(metas, i18n.PromptMeta{
+			Key:    "system/hardcoded",
+			Source: "hardcoded",
+			Hash:   i18n.HashPromptForQuality(hardcoded),
+		})
 	} else {
 		// 三层优先级加载核心 prompt 段落
-		b.WriteString(m.promptLoader.LoadOrDefault("system/base",
-			"## 身份定义\n\n你是 Hive，一个具备工具调用能力的 AI 助手。\n\n"))
-		b.WriteString(m.promptLoader.LoadOrDefault("system/execution", ""))
-		b.WriteString(m.promptLoader.LoadOrDefault("system/business", "")) // 域 F：业务场景识别段（可选）
-		b.WriteString(m.promptLoader.LoadOrDefault("system/code_editing", ""))
-		b.WriteString(m.promptLoader.LoadOrDefault("system/safety", ""))
-		b.WriteString(m.promptLoader.LoadOrDefault("system/reply", ""))
+		writePrompt := func(key, fallback string) {
+			v := m.promptLoader.LoadWithMetaOrDefault(key, fallback)
+			b.WriteString(v.Content)
+			metas = append(metas, v.Meta)
+		}
+		writePrompt("system/base", "## 身份定义\n\n你是 Hive，一个具备工具调用能力的 AI 助手。\n\n")
+		writePrompt("system/execution", "")
+		writePrompt("system/business", "") // 域 F：业务场景识别段（可选）
+		writePrompt("system/code_editing", "")
+		writePrompt("system/safety", "")
+		writePrompt("system/reply", "")
 		b.WriteString("\n")
 	}
+
+	b.WriteString(m.buildToolPrompt(tools))
+	return systemPromptBuild{Content: b.String(), Metas: metas}
+}
+
+func (m *Master) buildToolPrompt(tools []mcphost.ToolDefinition) string {
+	var b strings.Builder
 
 	// 可用工具提示（仅列出核心工具，减少 system prompt 体积）
 	if len(tools) > 0 {
@@ -180,7 +215,7 @@ func (m *Master) buildSystemPrompt(tools []mcphost.ToolDefinition) string {
 				b.WriteString(fmt.Sprintf("- **%s**: %s\n", t.Name, t.Description))
 			}
 		}
-		b.WriteString("\n你还有更多扩展工具可用，可以直接调用任何已注册的工具。\n\n")
+		b.WriteString("\n更多扩展工具默认不进入候选集。需要不常用、外部 MCP 或自定义能力时，先调用 **tool_search** 按需发现；发现后的工具会在后续轮次进入可调用列表。\n\n")
 
 		// 外部 MCP 工具提示（按服务端分组，帮助 LLM 了解可用的外部集成）
 		externalTools := make(map[string][]mcphost.ToolDefinition)
@@ -336,9 +371,9 @@ func (m *Master) buildCompactionPipeline() *compaction.Pipeline {
 
 	// tool_budget: 工具输出截断
 	registry["tool_budget"] = &compaction.ToolResultBudgetCompactor{
-		ProtectedTurns: PruneProtectedTurns,
+		ProtectedTurns:  PruneProtectedTurns,
 		OutputThreshold: cfg.ToolOutputMaxTokens,
-		ContextBudget:  cfg.ToolOutputMaxTokens * 2,
+		ContextBudget:   cfg.ToolOutputMaxTokens * 2,
 	}
 
 	// session_memory: 提取会话记忆

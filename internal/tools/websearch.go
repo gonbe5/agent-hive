@@ -32,11 +32,37 @@ type SearchResult struct {
 	Description string `json:"description"` // 结果描述
 }
 
+// SearchResultEnvelope 是 websearch 的结构化输出。
+// Content 仍作为 JSON 字符串返回，保持旧调用方按文本读取的兼容性。
+type SearchResultEnvelope struct {
+	Provider string                 `json:"provider"`            // 实际提供结果的 provider
+	Status   string                 `json:"status"`              // ok / no_results / filtered_empty / error
+	Results  []SearchResult         `json:"results"`             // 过滤和截断后的结果
+	Error    string                 `json:"error,omitempty"`     // 错误或零结果原因
+	Fallback SearchFallbackEnvelope `json:"fallback"`            // fallback 执行信息
+	Text     string                 `json:"text,omitempty"`      // 兼容旧文本消费方的人类可读输出
+	RawCount int                    `json:"raw_count,omitempty"` // provider 原始结果数，用于观测和排障
+}
+
+// SearchFallbackEnvelope 记录 provider fallback 是否发生以及原因。
+type SearchFallbackEnvelope struct {
+	Used         bool   `json:"used"`
+	FromProvider string `json:"from_provider,omitempty"`
+	ToProvider   string `json:"to_provider,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+}
+
+type searchProvider interface {
+	Name() string
+	Search(ctx context.Context, query string, logger *zap.Logger) ([]SearchResult, error)
+}
+
 // searchClient 封装 DuckDuckGo HTTP 调用，用于在测试中替换 endpoint / transport。
 // 生产路径通过 defaultSearchClient() 构造；测试路径用 httptest.Server 注入。
 type searchClient struct {
 	Endpoint   string
 	HTTPClient *http.Client
+	NameValue  string
 }
 
 // maxResultsHardCap 是 websearch 参数的硬上限。
@@ -67,7 +93,19 @@ func defaultSearchClient() *searchClient {
 	return &searchClient{
 		Endpoint:   "https://html.duckduckgo.com/html/",
 		HTTPClient: &http.Client{Timeout: 30 * time.Second},
+		NameValue:  "duckduckgo",
 	}
+}
+
+func (c *searchClient) Name() string {
+	if c != nil && c.NameValue != "" {
+		return c.NameValue
+	}
+	return "duckduckgo"
+}
+
+func (c *searchClient) Search(ctx context.Context, query string, logger *zap.Logger) ([]SearchResult, error) {
+	return c.performSearch(ctx, query, logger)
 }
 
 // registerWebSearch 注册 websearch 工具。
@@ -77,6 +115,7 @@ func defaultSearchClient() *searchClient {
 // 多个 Host 并发注册会互相污染、产生数据 race。改成显式入参：
 //   - 生产路径传 nil → 闭包捕获 defaultSearchClient()，每个 Host 独立实例。
 //   - 测试路径传 httptest.Server 背后的 searchClient，随 Host 生命周期独立。
+//
 // 闭包捕获后执行时直接走 capturedClient，不再读全局。
 func registerWebSearch(host *mcphost.Host, logger *zap.Logger, strictMode bool, client *searchClient) {
 	capturedClient := client
@@ -137,8 +176,7 @@ func registerWebSearch(host *mcphost.Host, logger *zap.Logger, strictMode bool, 
 			searchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 
-			// 执行搜索。闭包捕获 capturedClient，每个 Host 注册时就固定，不再读全局。
-			rawResults, err := capturedClient.performSearch(searchCtx, params.Query, logger)
+			envelope, err := executeWebSearch(searchCtx, params, strictMode, capturedClient, nil, logger)
 			if err != nil {
 				// M8：输出结构化日志，outcome=http_error 便于告警过滤
 				logger.Error("websearch 搜索失败",
@@ -149,20 +187,12 @@ func registerWebSearch(host *mcphost.Host, logger *zap.Logger, strictMode bool, 
 				return errorResult("搜索失败: " + err.Error()), nil
 			}
 
-			// 应用域名过滤
-			filteredResults := filterResultsByDomain(rawResults, params.AllowedDomains, params.BlockedDomains)
-
-			// 限制结果数量
-			if len(filteredResults) > params.MaxResults {
-				filteredResults = filteredResults[:params.MaxResults]
-			}
-
 			// M8：统一结构化日志，outcome 枚举便于可观测性后端聚合。
-			outcome := "ok"
-			switch {
-			case len(rawResults) == 0:
+			outcome := envelope.Status
+			switch outcome {
+			case "no_results":
 				outcome = "raw_empty"
-			case len(filteredResults) == 0:
+			case "filtered_empty":
 				outcome = "filter_empty"
 			}
 			logLevel := logger.Info
@@ -171,14 +201,74 @@ func registerWebSearch(host *mcphost.Host, logger *zap.Logger, strictMode bool, 
 			}
 			logLevel("websearch 执行完毕",
 				zap.String("query", params.Query),
-				zap.Int("raw_count", len(rawResults)),
-				zap.Int("filtered_count", len(filteredResults)),
+				zap.Int("raw_count", envelope.RawCount),
+				zap.Int("filtered_count", len(envelope.Results)),
 				zap.Bool("strict", strictMode),
 				zap.String("outcome", outcome))
 
-			return buildSearchToolResult(filteredResults, len(rawResults), params.Query, strictMode), nil
+			return buildSearchToolResultFromEnvelope(envelope, strictMode), nil
 		},
 	)
+}
+
+func executeWebSearch(ctx context.Context, params websearchInput, strict bool, primary searchProvider, fallback searchProvider, logger *zap.Logger) (SearchResultEnvelope, error) {
+	if primary == nil {
+		primary = defaultSearchClient()
+	}
+	rawResults, providerName, fallbackInfo, err := searchWithFallback(ctx, params.Query, primary, fallback, logger)
+	if err != nil {
+		return SearchResultEnvelope{
+			Provider: providerName,
+			Status:   "error",
+			Error:    err.Error(),
+			Fallback: fallbackInfo,
+			Text:     "搜索失败: " + err.Error(),
+		}, err
+	}
+
+	rawCount := len(rawResults)
+	filteredResults := filterResultsByDomain(rawResults, params.AllowedDomains, params.BlockedDomains)
+	if len(filteredResults) > params.MaxResults {
+		filteredResults = filteredResults[:params.MaxResults]
+	}
+
+	envelope := makeSearchResultEnvelope(providerName, filteredResults, rawCount, params.Query, strict)
+	envelope.Fallback = fallbackInfo
+	return envelope, nil
+}
+
+func searchWithFallback(ctx context.Context, query string, primary searchProvider, fallback searchProvider, logger *zap.Logger) ([]SearchResult, string, SearchFallbackEnvelope, error) {
+	providerName := primary.Name()
+	results, err := primary.Search(ctx, query, logger)
+	if err == nil && len(results) > 0 {
+		return results, providerName, SearchFallbackEnvelope{}, nil
+	}
+
+	if fallback == nil {
+		return results, providerName, SearchFallbackEnvelope{}, err
+	}
+
+	reason := "primary returned no results"
+	if err != nil {
+		reason = err.Error()
+	}
+	fallbackInfo := SearchFallbackEnvelope{
+		Used:         true,
+		FromProvider: providerName,
+		ToProvider:   fallback.Name(),
+		Reason:       reason,
+	}
+	fallbackResults, fallbackErr := fallback.Search(ctx, query, logger)
+	if fallbackErr != nil {
+		if err != nil {
+			return nil, providerName, fallbackInfo, fmt.Errorf("%s fallback failed: %w", err.Error(), fallbackErr)
+		}
+		return results, providerName, fallbackInfo, fallbackErr
+	}
+	if len(fallbackResults) == 0 {
+		return results, providerName, fallbackInfo, err
+	}
+	return fallbackResults, fallback.Name(), fallbackInfo, nil
 }
 
 // buildSearchToolResult P0-B + H4：根据 raw/filtered 区分返回值。
@@ -186,23 +276,46 @@ func registerWebSearch(host *mcphost.Host, logger *zap.Logger, strictMode bool, 
 // strict=true 且 raw>0 但 filtered==0：搜到了但被域名过滤干掉 → 非 IsError 文本，告诉上层是过滤问题。
 // strict=false：一律 textResult（保持旧行为）。
 func buildSearchToolResult(filtered []SearchResult, rawCount int, query string, strict bool) *mcphost.ToolResult {
-	if strict {
-		if rawCount == 0 {
-			return errorResult(fmt.Sprintf(
-				"websearch 零结果（query=%q）：DuckDuckGo HTTP 200 但解析后结果为 0。"+
-					"可能原因：查询过窄 / DDG 反爬 / HTML 结构变更。请调整查询词后重试，不要凭记忆编造。",
-				query,
-			))
-		}
-		if len(filtered) == 0 {
-			return textResult(fmt.Sprintf(
-				"搜索 '%s' 返回了 %d 条结果，但都被 allowed_domains / blocked_domains 过滤掉。"+
-					"这是过滤配置问题而非搜索失败，请调整域名过滤后重试。",
-				query, rawCount,
-			))
-		}
+	return buildSearchToolResultFromEnvelope(makeSearchResultEnvelope("duckduckgo", filtered, rawCount, query, strict), strict)
+}
+
+func makeSearchResultEnvelope(provider string, filtered []SearchResult, rawCount int, query string, strict bool) SearchResultEnvelope {
+	envelope := SearchResultEnvelope{
+		Provider: provider,
+		Status:   "ok",
+		Results:  filtered,
+		Text:     formatSearchResults(filtered, query),
+		RawCount: rawCount,
 	}
-	return textResult(formatSearchResults(filtered, query))
+	if strict && rawCount == 0 {
+		envelope.Status = "no_results"
+		envelope.Error = fmt.Sprintf(
+			"websearch 零结果（query=%q）：DuckDuckGo HTTP 200 但解析后结果为 0。"+
+				"可能原因：查询过窄 / DDG 反爬 / HTML 结构变更。请调整查询词后重试，不要凭记忆编造。",
+			query,
+		)
+		envelope.Text = envelope.Error
+		return envelope
+	}
+	if strict && len(filtered) == 0 {
+		envelope.Status = "filtered_empty"
+		envelope.Text = fmt.Sprintf(
+			"搜索 '%s' 返回了 %d 条结果，但都被 allowed_domains / blocked_domains 过滤掉。"+
+				"这是过滤配置问题而非搜索失败，请调整域名过滤后重试。",
+			query, rawCount,
+		)
+	}
+	return envelope
+}
+
+func buildSearchToolResultFromEnvelope(envelope SearchResultEnvelope, strict bool) *mcphost.ToolResult {
+	data, _ := json.Marshal(envelope)
+	result := textResult(string(data))
+	result.IsError = strict && envelope.Status == "no_results"
+	if envelope.Status == "error" {
+		result.IsError = true
+	}
+	return result
 }
 
 // performSearch 在可注入的 endpoint 上执行 DuckDuckGo 风格搜索。

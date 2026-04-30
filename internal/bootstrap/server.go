@@ -13,6 +13,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/chef-guo/agents-hive/internal/accounting"
+	"github.com/chef-guo/agents-hive/internal/agentquality"
 	"github.com/chef-guo/agents-hive/internal/auth"
 	"github.com/chef-guo/agents-hive/internal/i18n"
 
@@ -36,6 +37,7 @@ import (
 	"github.com/chef-guo/agents-hive/internal/memory"
 	"github.com/chef-guo/agents-hive/internal/observability"
 	"github.com/chef-guo/agents-hive/internal/plugin"
+	"github.com/chef-guo/agents-hive/internal/runtimepolicy"
 	"github.com/chef-guo/agents-hive/internal/sandbox"
 	"github.com/chef-guo/agents-hive/internal/skills"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -52,12 +54,29 @@ import (
 	"github.com/chef-guo/agents-hive/internal/tools"
 )
 
+func runtimePolicyFromConfig(c config.RuntimePolicyConfig) runtimepolicy.Policy {
+	return runtimepolicy.Policy{
+		LLMCallTimeout:      c.LLMCallTimeout,
+		ToolTimeout:         c.ToolTimeout,
+		TaskTimeout:         c.TaskTimeout,
+		SpawnAgentTimeout:   c.SpawnAgentTimeout,
+		ACPPromptTimeout:    c.ACPPromptTimeout,
+		ACPReconnectTimeout: c.ACPReconnectTimeout,
+		SubagentMaxTurns:    c.SubagentMaxTurns,
+		SubagentMaxDepth:    c.SubagentMaxDepth,
+		PerSessionParallel:  c.PerSessionParallel,
+		GlobalWorkers:       c.GlobalWorkers,
+		MaxSessionCostUSD:   c.MaxSessionCostUSD,
+	}
+}
+
 // ServerComponents 持有 Server 模式所有已初始化的组件
 type ServerComponents struct {
-	SkillReg    *skills.OverlayRegistry // 双层 skill 注册表（FS + DB）
-	SkillStore  *store.SkillStore       // Skill DB 存储（可选，DB 不可用时为 nil）
-	SkillSvc    *skills.SkillService    // Skill 热重载服务（可选）
-	SkillFinder *skills.Finder
+	SkillReg              *skills.OverlayRegistry // 双层 skill 注册表（FS + DB）
+	SkillStore            *store.SkillStore       // Skill DB 存储（可选，DB 不可用时为 nil）
+	SkillSvc              *skills.SkillService    // Skill 热重载服务（可选）
+	SkillFinder           *skills.Finder
+	QualityCandidateStore *agentquality.PGCandidateStore
 	// hive-skill-on-demand 新增（task 11.3-11.6）——按需解析 + 权限 + spec 路由聚合
 	SkillDiscovery      *skills.Discovery        // marketplace 远程解析器（按需拉取）；OnDemandEnabled=false 时仍构造，用于未来路径
 	AdminChecker        skills.AdminChecker      // public scope 安装权限判定（auth 启用时真实，否则 DenyAll）
@@ -288,11 +307,13 @@ func InitServer(cfg *config.Config, configPath string, logger *zap.Logger) *Serv
 	if pgPool != nil {
 		sc.SkillStore = store.NewSkillStore(pgPool, logger)
 		sc.SkillSvc = skills.NewSkillService(sc.SkillStore, sc.SkillReg, logger)
+		sc.QualityCandidateStore = agentquality.NewPGCandidateStore(pgPool, logger)
 		if err := sc.SkillSvc.LoadAll(sc.notifyCtx); err != nil {
 			logger.Warn("Skill DB 全量加载失败（忽略，继续启动）", zap.Error(err))
 		}
 		sc.SkillSvc.Start(sc.notifyCtx)
 		logger.Info("Skill DB 覆盖层已启用")
+		logger.Info("Agent Quality 候选用例池已启用")
 	}
 
 	// 7.1 沙箱执行器（在 DB 配置加载之后创建，确保 cfg.Sandbox 已被 DB 覆盖）
@@ -343,6 +364,7 @@ func InitServer(cfg *config.Config, configPath string, logger *zap.Logger) *Serv
 		MaxSessionCost:              cfg.Agent.MaxSessionCost,
 		SpecDriven:                  cfg.SpecDriven,
 		QualityGuards:               cfg.Agent.QualityGuards,
+		RuntimePolicy:               runtimePolicyFromConfig(cfg.RuntimePolicy),
 	}, cfg.HITL, sc.AgentReg, sc.SkillReg, sc.SessionStore, logger)
 
 	sc.Master.EnableStreamingExecutor = true // 域D: 并发工具执行已就绪，正式启用
@@ -1051,6 +1073,7 @@ func initObservability(sc *ServerComponents, logger *zap.Logger) {
 	pool := pgStore.Pool()
 	sc.Master.SetTracer(observability.NewPgTracer(pool, logger))
 	sc.Master.SetMetricsWriter(observability.NewPgMetricsWriter(pool, logger))
+	sc.Master.SetLogWriter(observability.NewPgLogWriter(pool, logger))
 	if sc.ChannelRouter != nil {
 		sc.ChannelRouter.SetMetricsWriter(observability.NewPgMetricsWriter(pool, logger))
 	}
@@ -1058,7 +1081,7 @@ func initObservability(sc *ServerComponents, logger *zap.Logger) {
 }
 
 func initACPAgents(m *master.Master, cfg *config.Config, logger *zap.Logger) *acpclient.ACPClientPool {
-	pool := acpclient.NewPool(logger)
+	pool := acpclient.NewPoolWithObserver(logger, m)
 	for _, raCfg := range cfg.RemoteAgents {
 		if !raCfg.Enabled {
 			continue

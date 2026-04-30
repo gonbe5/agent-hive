@@ -113,7 +113,10 @@ func (m *Master) SessionLoop(ctx context.Context) error {
 	}
 
 	// Worker Pool
-	workerCount := m.config.MaxConcurrentTasks
+	workerCount := m.config.RuntimePolicy.GlobalWorkers
+	if workerCount <= 0 {
+		workerCount = m.config.MaxConcurrentTasks
+	}
 	if workerCount <= 0 {
 		workerCount = 50
 	}

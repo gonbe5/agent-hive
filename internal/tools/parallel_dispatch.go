@@ -62,7 +62,7 @@ const maxTaskTimeout = 30 * time.Minute
 // executor: TaskExecutor 实现（通常是 Master）
 // broadcaster: 广播接口（可选，用于实时广播任务组事件）
 // logger: 日志记录器
-func registerParallelDispatch(host *mcphost.Host, executor TaskExecutor, broadcaster ParallelDispatchBroadcaster, logger *zap.Logger) {
+func registerParallelDispatch(host *mcphost.Host, executor TaskExecutor, broadcaster ParallelDispatchBroadcaster, logger *zap.Logger, observer DelegationObserver) {
 	schema, _ := json.Marshal(map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -235,6 +235,17 @@ func registerParallelDispatch(host *mcphost.Host, executor TaskExecutor, broadca
 							zap.String("agent_id", t.AgentID),
 							zap.Error(err),
 						)
+						if observer != nil {
+							observer.RecordDelegation(ctx, DelegationEvent{
+								AgentID:     t.AgentID,
+								AgentType:   "subagent",
+								GroupID:     groupID,
+								SpawnDepth:  toolCtx.Depth + 1,
+								Status:      "failed",
+								FailureType: "runtime",
+								Error:       err.Error(),
+							})
+						}
 						results[idx] = parallelTaskResult{
 							ID:      t.ID,
 							AgentID: t.AgentID,
@@ -253,6 +264,15 @@ func registerParallelDispatch(host *mcphost.Host, executor TaskExecutor, broadca
 						AgentID: t.AgentID,
 						Status:  "completed",
 						Result:  result,
+					}
+					if observer != nil {
+						observer.RecordDelegation(ctx, DelegationEvent{
+							AgentID:    t.AgentID,
+							AgentType:  "subagent",
+							GroupID:    groupID,
+							SpawnDepth: toolCtx.Depth + 1,
+							Status:     "completed",
+						})
 					}
 					// 广播任务完成
 					if broadcaster != nil {
@@ -290,6 +310,22 @@ func registerParallelDispatch(host *mcphost.Host, executor TaskExecutor, broadca
 				zap.Int("completed", completedCount),
 				zap.Int("failed", failedCount),
 			)
+			if observer != nil {
+				status := "completed"
+				failureType := ""
+				if failedCount > 0 {
+					status = "failed"
+					failureType = "runtime"
+				}
+				observer.RecordDelegation(ctx, DelegationEvent{
+					AgentType:   "subagent_group",
+					GroupID:     groupID,
+					SpawnDepth:  toolCtx.Depth + 1,
+					Status:      status,
+					FailureType: failureType,
+					StopReason:  fmt.Sprintf("completed=%d failed=%d", completedCount, failedCount),
+				})
+			}
 
 			// 返回聚合结果 JSON
 			resultJSON, _ := json.Marshal(map[string]interface{}{

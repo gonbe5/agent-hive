@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNodeClient } from '../../hooks/useNodeClient';
 import { useToastStore } from '../../store/toast';
@@ -14,7 +14,7 @@ export function RemoteAgentsSettings() {
   const [loading, setLoading] = useState(false);
   const [showForm, setShowForm] = useState(false);
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     try {
       const [list, health] = await Promise.all([
@@ -28,11 +28,11 @@ export function RemoteAgentsSettings() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [client]);
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [loadData]);
 
   const handleDisconnect = async (name: string) => {
     if (!window.confirm(t('remoteAgents.disconnectConfirm', { name }))) return;

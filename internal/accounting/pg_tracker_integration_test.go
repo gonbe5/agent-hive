@@ -31,12 +31,23 @@ func setupTestDB(t *testing.T) (*pgxpool.Pool, func()) {
 		CREATE TABLE IF NOT EXISTS usage_records (
 			id               BIGSERIAL PRIMARY KEY,
 			session_id       TEXT NOT NULL,
+			user_id          TEXT NOT NULL DEFAULT '',
 			model            TEXT NOT NULL,
 			prompt_tokens    BIGINT NOT NULL DEFAULT 0,
 			completion_tokens BIGINT NOT NULL DEFAULT 0,
 			cost_usd         DOUBLE PRECISION NOT NULL DEFAULT 0,
+			task_type        TEXT NOT NULL DEFAULT '',
+			quality_case_id  TEXT NOT NULL DEFAULT '',
+			prompt_version   TEXT NOT NULL DEFAULT '',
+			failure_type     TEXT NOT NULL DEFAULT '',
+			final_status     TEXT NOT NULL DEFAULT '',
 			created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `
+		ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS failure_type TEXT NOT NULL DEFAULT '';
+		ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS final_status TEXT NOT NULL DEFAULT '';
+	`)
 	require.NoError(t, err)
 
 	cleanup := func() {
@@ -138,8 +149,8 @@ func TestPgTracker_GetTotalCost_ConsistencyUnderConcurrentWrites(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			_ = tracker.Record(ctx, accounting.UsageEntry{
-				SessionID: "sess-concurrent",
-				Model:     "gpt-4o",
+				SessionID:    "sess-concurrent",
+				Model:        "gpt-4o",
 				PromptTokens: 10, CompletionTokens: 5, CostUSD: 0.0001,
 			})
 		}()
@@ -175,6 +186,37 @@ func TestPgTracker_GetSessionCost_IsolatesSession(t *testing.T) {
 	summaryB, err := tracker.GetSessionCost(ctx, "sess-B")
 	require.NoError(t, err)
 	assert.Equal(t, int64(200), summaryB.TotalPromptTokens)
+}
+
+func TestPgTracker_GetQualityCost_ByFailureAndStatus(t *testing.T) {
+	pool, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	tracker := accounting.NewPgTracker(pool, nil)
+	ctx := context.Background()
+
+	entries := []accounting.UsageEntry{
+		{SessionID: "sess-q1", Model: "m", PromptTokens: 100, CompletionTokens: 20, CostUSD: 0.001, TaskType: "react", QualityCaseID: "aq01", PromptVersion: "p1", FailureType: "tool", FinalStatus: "fail"},
+		{SessionID: "sess-q2", Model: "m", PromptTokens: 50, CompletionTokens: 10, CostUSD: 0.002, TaskType: "react", QualityCaseID: "aq02", PromptVersion: "p1", FailureType: "tool", FinalStatus: "fail"},
+		{SessionID: "sess-q3", Model: "m", PromptTokens: 30, CompletionTokens: 5, CostUSD: 0.003, TaskType: "subagent", QualityCaseID: "aq03", PromptVersion: "p2", FailureType: "permission", FinalStatus: "needs_user"},
+	}
+	for _, entry := range entries {
+		require.NoError(t, tracker.Record(ctx, entry))
+	}
+
+	summary, err := tracker.GetQualityCost(ctx)
+	require.NoError(t, err)
+
+	require.Contains(t, summary.ByFailureType, "tool")
+	assert.Equal(t, int64(180), summary.ByFailureType["tool"].Tokens)
+	assert.Equal(t, int64(2), summary.ByFailureType["tool"].RequestCount)
+	assert.InDelta(t, 0.003, summary.ByFailureType["tool"].CostUSD, 1e-9)
+
+	require.Contains(t, summary.ByFinalStatus, "fail")
+	assert.Equal(t, int64(180), summary.ByFinalStatus["fail"].Tokens)
+	assert.Equal(t, int64(2), summary.ByFinalStatus["fail"].RequestCount)
+	require.Contains(t, summary.ByFinalStatus, "needs_user")
+	assert.Equal(t, int64(35), summary.ByFinalStatus["needs_user"].Tokens)
 }
 
 func TestPgTracker_Cleanup_RetentionDaysValidation(t *testing.T) {

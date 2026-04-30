@@ -60,7 +60,6 @@ CREATE TABLE IF NOT EXISTS journal_decisions (
 CREATE INDEX IF NOT EXISTS idx_journal_dec_session ON journal_decisions(session_id, created_at);
 `
 
-
 // PGJournal 基于 PostgreSQL 的日志实现
 type PGJournal struct {
 	pool   *pgxpool.Pool
@@ -364,20 +363,37 @@ func (j *PGJournal) GetJournalStats(ctx context.Context, sessionIDs []string) (m
 
 	// 4. decision 计数
 	decRows, err := j.pool.Query(ctx,
-		`SELECT session_id, COUNT(*) FROM journal_decisions WHERE session_id = ANY($1) GROUP BY session_id`,
+		`SELECT session_id, reason FROM journal_decisions WHERE session_id = ANY($1)`,
 		sessionIDs)
 	if err != nil {
 		return nil, err
 	}
 	for decRows.Next() {
 		var sid string
-		var cnt int
-		if err := decRows.Scan(&sid, &cnt); err != nil {
+		var reason string
+		if err := decRows.Scan(&sid, &reason); err != nil {
 			decRows.Close()
 			return nil, err
 		}
 		if s, ok := result[sid]; ok {
-			s.DecisionCount = cnt
+			s.DecisionCount++
+			qStats := qualityDecisionStatsFromReason(reason)
+			if qStats.QualityError {
+				s.QualityErrorCount++
+				s.HasError = true
+			}
+			if qStats.Dangerous {
+				s.DangerousCount++
+			}
+			if qStats.Delegation {
+				s.DelegationCount++
+			}
+			if qStats.ACP {
+				s.ACPCount++
+			}
+			if qStats.ContextPollution {
+				s.ContextPollutionCount++
+			}
 		}
 	}
 	decRows.Close()

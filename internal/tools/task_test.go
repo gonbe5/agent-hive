@@ -28,7 +28,7 @@ func TestRegisterTask(t *testing.T) {
 	host := mcphost.NewHost(logger)
 
 	executor := &mockTaskExecutor{}
-	registerTask(host, executor, logger)
+	registerTask(host, executor, logger, nil, 0)
 
 	// 验证工具已注册
 	tools := host.ListTools()
@@ -61,7 +61,7 @@ func TestTaskTool_MasterCanCall(t *testing.T) {
 			return "分析完成", nil
 		},
 	}
-	registerTask(host, executor, logger)
+	registerTask(host, executor, logger, nil, 0)
 
 	// 构造 Master 调用的 context
 	ctx := WithToolContext(context.Background(), &ToolContext{
@@ -100,7 +100,7 @@ func TestTaskTool_SubAgentCannotCall(t *testing.T) {
 			return "不应该执行", nil
 		},
 	}
-	registerTask(host, executor, logger)
+	registerTask(host, executor, logger, nil, 0)
 
 	// 构造 SubAgent 调用的 context
 	ctx := WithToolContext(context.Background(), &ToolContext{
@@ -139,7 +139,7 @@ func TestTaskTool_MaxDepthCheck(t *testing.T) {
 			return "不应该执行", nil
 		},
 	}
-	registerTask(host, executor, logger)
+	registerTask(host, executor, logger, nil, 0)
 
 	// 构造深度超过限制的 context
 	ctx := WithToolContext(context.Background(), &ToolContext{
@@ -172,7 +172,7 @@ func TestTaskTool_MissingAgentID(t *testing.T) {
 	host := mcphost.NewHost(logger)
 
 	executor := &mockTaskExecutor{}
-	registerTask(host, executor, logger)
+	registerTask(host, executor, logger, nil, 0)
 
 	ctx := WithToolContext(context.Background(), &ToolContext{
 		CallerType: CallerMaster,
@@ -200,7 +200,7 @@ func TestTaskTool_MissingInstruction(t *testing.T) {
 	host := mcphost.NewHost(logger)
 
 	executor := &mockTaskExecutor{}
-	registerTask(host, executor, logger)
+	registerTask(host, executor, logger, nil, 0)
 
 	ctx := WithToolContext(context.Background(), &ToolContext{
 		CallerType: CallerMaster,
@@ -231,7 +231,7 @@ func TestTaskTool_ExecutionError(t *testing.T) {
 			return "", errs.New(errs.CodeAgentNotFound, "agent not found")
 		},
 	}
-	registerTask(host, executor, logger)
+	registerTask(host, executor, logger, nil, 0)
 
 	ctx := WithToolContext(context.Background(), &ToolContext{
 		CallerType: CallerMaster,
@@ -265,7 +265,7 @@ func TestTaskTool_WithContext(t *testing.T) {
 			return "ok", nil
 		},
 	}
-	registerTask(host, executor, logger)
+	registerTask(host, executor, logger, nil, 0)
 
 	ctx := WithToolContext(context.Background(), &ToolContext{
 		CallerType: CallerMaster,
@@ -308,7 +308,7 @@ func TestTaskTool_InvalidJSON(t *testing.T) {
 	host := mcphost.NewHost(logger)
 
 	executor := &mockTaskExecutor{}
-	registerTask(host, executor, logger)
+	registerTask(host, executor, logger, nil, 0)
 
 	ctx := WithToolContext(context.Background(), &ToolContext{
 		CallerType: CallerMaster,
@@ -339,7 +339,7 @@ func TestTaskTool_SystemAgentDenyList(t *testing.T) {
 			return "不应该执行", nil
 		},
 	}
-	registerTask(host, executor, logger)
+	registerTask(host, executor, logger, nil, 0)
 
 	ctx := WithToolContext(context.Background(), &ToolContext{
 		CallerType: CallerMaster,

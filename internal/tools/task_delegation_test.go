@@ -29,7 +29,7 @@ func (m *delegationTestExecutor) ExecuteTask(_ context.Context, agentID string, 
 func setupTaskTool(t *testing.T, executor TaskExecutor) *mcphost.Host {
 	t.Helper()
 	host := mcphost.NewHost(zap.NewNop())
-	registerTask(host, executor, zap.NewNop())
+	registerTask(host, executor, zap.NewNop(), nil, 0)
 	return host
 }
 

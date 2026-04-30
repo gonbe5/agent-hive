@@ -2,7 +2,7 @@ import { useCallback, useRef } from 'react';
 import type { WSMessage, InputRequest, Message } from '../types/api';
 import { useHITLStore } from '../store/hitl';
 import { useChatStore } from '../store/chat';
-import { useTaskProgressStore } from '../store/taskProgress';
+import { useTaskProgressStore, type TaskGroupEvent, type TaskProgressEvent, type AgentProgressEvent } from '../store/taskProgress';
 import { useAgentActivityStore } from '../store/agentActivity';  // Sidebar SessionStatusDot 依赖 sessionStatus
 import { useSessionStore } from '../store/session';
 import { rfc3339Now } from '../utils/date';
@@ -232,15 +232,19 @@ export function useWebSocket({ url, sessionId, enabled = true, onMessage, client
       }
 
       case 'task_group':
-        useTaskProgressStore.getState().setTaskGroup(msg.payload);
+        useTaskProgressStore.getState().setTaskGroup(msg.payload as TaskGroupEvent);
         break;
       case 'task_progress': {
-        const tp = msg.payload as any;
-        useTaskProgressStore.getState().updateTask(tp.groupId || tp.group_id, tp.taskId || tp.task_id, tp);
+        const tp = msg.payload as TaskProgressEvent;
+        const groupId = tp.groupId || tp.group_id;
+        const taskId = tp.taskId || tp.task_id;
+        if (groupId && taskId) {
+          useTaskProgressStore.getState().updateTask(groupId, taskId, tp);
+        }
         break;
       }
       case 'agent_progress':
-        useTaskProgressStore.getState().updateAgentProgress(msg.payload);
+        useTaskProgressStore.getState().updateAgentProgress(msg.payload as AgentProgressEvent);
         break;
 
       case 'session_title': {

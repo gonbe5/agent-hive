@@ -15,6 +15,7 @@ import { UserList } from './pages/admin/UserList';
 import { UsageStats } from './pages/admin/UsageStats';
 import { AuthProviders } from './pages/admin/AuthProviders';
 import { PromptManager } from './pages/admin/PromptManager';
+import { QualityCandidates } from './pages/admin/QualityCandidates';
 import { LLMProviders } from './pages/admin/LLMProviders';
 import { SessionReplay } from './pages/SessionReplay';
 import { ReplayGallery } from './pages/ReplayGallery';
@@ -79,6 +80,7 @@ export default function App() {
               <Route path="/admin/usage" element={<AdminGuard><UsageStats /></AdminGuard>} />
               <Route path="/admin/auth-providers" element={<AdminGuard><AuthProviders /></AdminGuard>} />
               <Route path="/admin/prompts" element={<AdminGuard><PromptManager /></AdminGuard>} />
+              <Route path="/admin/quality-candidates" element={<AdminGuard><QualityCandidates /></AdminGuard>} />
               <Route path="/admin/llm" element={<AdminGuard><LLMProviders /></AdminGuard>} />
             </Route>
           </Route>

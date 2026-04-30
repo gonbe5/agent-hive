@@ -2,6 +2,8 @@ package i18n
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"sync"
@@ -29,16 +31,28 @@ type dbCacheEntry struct {
 	expiresAt time.Time
 }
 
+type PromptMeta struct {
+	Key      string `json:"key"`
+	Source   string `json:"source"`
+	Language string `json:"language,omitempty"`
+	Hash     string `json:"hash"`
+}
+
+type PromptValue struct {
+	Content string
+	Meta    PromptMeta
+}
+
 // PromptLoader 三层优先级加载器：DB > 文件 > go:embed 硬编码
 //
 // Session 隔离语义：buildSystemPrompt() 每个 turn 调用一次，
 // prompt 更新在下一个 turn 生效（最多 30 秒 DB 缓存延迟）。
 // 正在运行的 turn 不受影响，这是有意设计。
 type PromptLoader struct {
-	store     PromptStoreReader
-	baseDir   string
-	language  string
-	cacheTTL  time.Duration
+	store        PromptStoreReader
+	baseDir      string
+	language     string
+	cacheTTL     time.Duration
 	pollInterval time.Duration
 
 	mu        sync.RWMutex
@@ -143,6 +157,52 @@ func (l *PromptLoader) LoadOrDefault(relPath, defaultVal string) string {
 		)
 	}
 	return defaultVal
+}
+
+func (l *PromptLoader) LoadWithMeta(relPath string) PromptValue {
+	return l.LoadWithMetaOrDefault(relPath, "")
+}
+
+func (l *PromptLoader) LoadWithMetaOrDefault(relPath, defaultVal string) PromptValue {
+	content := l.LoadOrDefault(relPath, defaultVal)
+	return PromptValue{
+		Content: content,
+		Meta: PromptMeta{
+			Key:      relPath,
+			Source:   l.resolvePromptSource(relPath, defaultVal),
+			Language: l.language,
+			Hash:     hashPrompt(content),
+		},
+	}
+}
+
+func (l *PromptLoader) resolvePromptSource(relPath, defaultVal string) string {
+	if l.store != nil {
+		if _, found := l.loadFromDB(relPath); found {
+			return "db"
+		}
+	}
+	if l.baseDir != "" {
+		if _, found := l.loadFromFile(relPath); found {
+			return "file"
+		}
+	}
+	if content := loadEmbedded(relPath); content != "" {
+		return "embedded"
+	}
+	if defaultVal != "" {
+		return "hardcoded"
+	}
+	return "default"
+}
+
+func HashPromptForQuality(content string) string {
+	return hashPrompt(content)
+}
+
+func hashPrompt(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return "sha256:" + hex.EncodeToString(sum[:8])
 }
 
 // InvalidateDBCache 管理界面更新 prompt 后调用，立即失效当前实例缓存

@@ -101,3 +101,29 @@ func TestMasterPrompt_ContainsKeyGuidance(t *testing.T) {
 			"prompt 应包含 %s 的关键指导: %q", r.section, r.keyword)
 	}
 }
+
+func TestBuildSystemPromptWithMeta_ReportsPromptVersions(t *testing.T) {
+	m, _ := newTestMaster(t)
+	build := m.buildSystemPromptWithMeta(nil)
+
+	assert.NotEmpty(t, build.Content)
+	versions := build.Versions()
+	assert.NotEmpty(t, versions)
+	assert.Contains(t, versions[0], "@hardcoded@sha256:")
+	assert.True(t, strings.Contains(build.Content, "你是 Hive"))
+}
+
+func TestBuildToolPrompt_UsesToolSearchForDeferredDiscovery(t *testing.T) {
+	m, _ := newTestMaster(t)
+
+	prompt := m.buildToolPrompt([]mcphost.ToolDefinition{
+		{Name: "read_file", Description: "读取文件", Core: true},
+		{Name: "tool_search", Description: "搜索工具", Core: true},
+		{Name: "custom_ext", Description: "扩展工具"},
+	})
+
+	assert.Contains(t, prompt, "tool_search")
+	assert.Contains(t, prompt, "按需发现")
+	assert.NotContains(t, prompt, "直接调用任何已注册的工具")
+	assert.NotContains(t, prompt, "**custom_ext**")
+}

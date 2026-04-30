@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom';
-import { Clock, Wrench, FileText, MessageSquare, CheckCircle2, XCircle, Loader2, Radio } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Clock, Wrench, FileText, MessageSquare, CheckCircle2, XCircle, Loader2, Radio, GitBranch, ShieldAlert } from 'lucide-react';
 import type { Session } from '../../types/api';
 import type { JournalStats } from '../../types/journal';
 import { AgentCharacter } from './AgentCharacter';
@@ -11,11 +12,19 @@ interface Props {
 
 export function ReplayCard({ session, stats }: Props) {
   const navigate = useNavigate();
+  const isLive = stats != null && !stats.ended_at;
+  const [liveNow, setLiveNow] = useState(0);
+
+  useEffect(() => {
+    if (!isLive) return;
+    const timer = window.setInterval(() => setLiveNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [isLive]);
 
   let duration = '';
   if (stats?.started_at) {
     const start = new Date(stats.started_at).getTime();
-    const end = stats.ended_at ? new Date(stats.ended_at).getTime() : Date.now();
+    const end = stats.ended_at ? new Date(stats.ended_at).getTime() : liveNow;
     const totalSecs = Math.max(0, Math.floor((end - start) / 1000));
     const days = Math.floor(totalSecs / 86400);
     const hours = Math.floor((totalSecs % 86400) / 3600);
@@ -34,7 +43,6 @@ export function ReplayCard({ session, stats }: Props) {
   }
 
   const hasData = stats != null;
-  const isLive = hasData && !stats.ended_at;
   const isError = hasData && stats.has_error;
   const isSuccess = hasData && !!stats.ended_at && !stats.has_error;
 
@@ -160,6 +168,25 @@ export function ReplayCard({ session, stats }: Props) {
           </div>
         )}
 
+        {hasData && ((stats.quality_error_count ?? 0) > 0 || (stats.dangerous_count ?? 0) > 0 || (stats.delegation_count ?? 0) > 0) && (
+          <div style={{
+            display: 'flex',
+            gap: 6,
+            flexWrap: 'wrap',
+            marginBottom: 8,
+          }}>
+            {(stats.quality_error_count ?? 0) > 0 && (
+              <ReplayBadge tone="error" label={`质量 ${stats.quality_error_count}`} />
+            )}
+            {(stats.dangerous_count ?? 0) > 0 && (
+              <ReplayBadge tone="danger" label={`危险 ${stats.dangerous_count}`} icon="danger" />
+            )}
+            {(stats.delegation_count ?? 0) > 0 && (
+              <ReplayBadge tone="info" label={`委派 ${stats.delegation_count}`} icon="branch" />
+            )}
+          </div>
+        )}
+
         <div style={{
           fontSize: 11,
           color: 'var(--text-secondary)',
@@ -181,5 +208,28 @@ export function ReplayCard({ session, stats }: Props) {
         }} />
       )}
     </button>
+  );
+}
+
+function ReplayBadge({ tone, label, icon }: { tone: 'error' | 'danger' | 'info'; label: string; icon?: 'danger' | 'branch' }) {
+  const color = tone === 'error' ? '#DC2626' : tone === 'danger' ? '#D97706' : 'var(--accent)';
+  const Icon = icon === 'danger' ? ShieldAlert : icon === 'branch' ? GitBranch : null;
+
+  return (
+    <span style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: 3,
+      fontSize: 10,
+      fontWeight: 600,
+      color,
+      background: 'var(--bg-secondary)',
+      border: `1px solid ${color}33`,
+      borderRadius: 'var(--radius-badge)',
+      padding: '2px 6px',
+    }}>
+      {Icon && <Icon size={10} />}
+      {label}
+    </span>
   );
 }

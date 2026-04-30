@@ -22,7 +22,7 @@ func TestBuildToolPolicy_DefaultConfig(t *testing.T) {
 	}
 
 	// P0-3: master_direct profile 应包含所有常用工具（直接执行路径）
-	allowed := []string{"skill", "memory", "question", "spawn_agent", "task", "bash", "write_file", "edit", "read_file", "glob", "grep"}
+	allowed := []string{"skill", "memory", "question", "spawn_agent", "task", "tool_search", "bash", "write_file", "edit", "read_file", "glob", "grep"}
 	for _, name := range allowed {
 		if !filter.IsAllowed(name) {
 			t.Errorf("master_direct profile 应允许工具 %q", name)
@@ -46,7 +46,7 @@ func TestBuildToolPolicy_CodingProfile(t *testing.T) {
 	}
 
 	// coding profile 应允许 fs/runtime/web/lsp 中的工具
-	allowed := []string{"read_file", "write_file", "edit", "glob", "grep", "ls", "bash", "websearch", "webfetch", "skill", "memory"}
+	allowed := []string{"read_file", "write_file", "edit", "glob", "grep", "ls", "bash", "websearch", "webfetch", "tool_search", "skill", "memory"}
 	for _, name := range allowed {
 		if !filter.IsAllowed(name) {
 			t.Errorf("工具 %q 应被 coding profile 允许", name)
@@ -116,7 +116,7 @@ func TestBuildToolPolicy_MasterProfile_NotFull(t *testing.T) {
 	}
 
 	// master_direct profile 应允许所有常用工具（P0-3 Phase 1）
-	for _, name := range []string{"bash", "write_file", "edit", "multiedit", "apply_patch", "create_tool", "remove_tool", "read_file", "glob", "grep", "skill", "memory", "question", "spawn_agent", "task", "parallel_dispatch", "send_im_message", "feishu_api", "wechat_send_rich_message", "wechat_contacts"} {
+	for _, name := range []string{"bash", "write_file", "edit", "multiedit", "apply_patch", "create_tool", "remove_tool", "read_file", "glob", "grep", "tool_search", "skill", "memory", "question", "spawn_agent", "task", "parallel_dispatch", "send_im_message", "feishu_api", "wechat_send_rich_message", "wechat_contacts"} {
 		if !filter.IsAllowed(name) {
 			t.Errorf("master_direct profile 应允许 %q", name)
 		}

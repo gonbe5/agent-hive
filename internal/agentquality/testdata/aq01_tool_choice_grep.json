@@ -1,0 +1,12 @@
+{
+  "id": "aq01_tool_choice_grep",
+  "name": "代码定位应优先 grep",
+  "route": "web",
+  "input": "在代码库里找 createPermissionPromptFn 的实现位置，并说明 PolicyAsk 的处理",
+  "expected_tools": ["grep"],
+  "expected_status": "pass",
+  "failure_type": "tool",
+  "risk": "safe",
+  "required": true,
+  "notes": "防止模型直接凭记忆回答或 read_file 大范围扫文件"
+}

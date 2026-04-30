@@ -14,11 +14,13 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 	"go.uber.org/zap"
 
+	"github.com/chef-guo/agents-hive/internal/agentquality"
 	"github.com/chef-guo/agents-hive/internal/command"
 	"github.com/chef-guo/agents-hive/internal/config"
 	"github.com/chef-guo/agents-hive/internal/errs"
 	"github.com/chef-guo/agents-hive/internal/master"
 	"github.com/chef-guo/agents-hive/internal/mcphost"
+	"github.com/chef-guo/agents-hive/internal/tools"
 )
 
 // sessionEntry 保存单个 ACP 会话的内部状态
@@ -127,7 +129,7 @@ func (a *ClawAgent) NewSession(_ context.Context, params acp.NewSessionRequest) 
 
 	// 将 ACP 权限桥接函数注入 Master（会话级，避免多会话权限路由到错误连接）
 	if a.conn != nil {
-		permFn := createACPPermissionFn(a.conn, acpSID, a.logger)
+		permFn := createACPPermissionFn(a.conn, acpSID, a.logger, a.master)
 		a.master.SetSessionPermissionFn(acpSID, permFn)
 		a.logger.Debug("ACP 权限桥接函数已注入 Master（会话级）",
 			zap.String("session_id", acpSID))
@@ -135,6 +137,11 @@ func (a *ClawAgent) NewSession(_ context.Context, params acp.NewSessionRequest) 
 
 	a.logger.Info("ACP 新会话已创建",
 		zap.String("acp_session_id", acpSID))
+	a.master.RecordDelegation(context.Background(), tools.DelegationEvent{
+		SessionID: acpSID,
+		AgentType: "acp",
+		Status:    "started",
+	})
 
 	resp := acp.NewSessionResponse{SessionId: acp.SessionId(acpSID)}
 
@@ -178,6 +185,7 @@ func (a *ClawAgent) Cancel(_ context.Context, params acp.CancelNotification) err
 		entry.cancel()
 		a.logger.Info("ACP 会话请求已取消", zap.String("session_id", sid))
 	}
+	a.recordDelegation(context.Background(), sid, "failed", string(agentquality.FailureRuntime), string(acp.StopReasonCancelled), "")
 	return nil
 }
 
@@ -190,6 +198,7 @@ func (a *ClawAgent) Prompt(ctx context.Context, params acp.PromptRequest) (acp.P
 	entry, ok := a.sessions[sid]
 	if !ok {
 		a.mu.Unlock()
+		a.recordDelegation(ctx, sid, "failed", string(agentquality.FailureRuntime), "session_not_found", fmt.Sprintf("会话 %s 不存在", sid))
 		return acp.PromptResponse{}, fmt.Errorf("会话 %s 不存在", sid)
 	}
 	if entry.cancel != nil {
@@ -211,34 +220,39 @@ func (a *ClawAgent) Prompt(ctx context.Context, params acp.PromptRequest) (acp.P
 	// 提取用户消息文本
 	userText := extractPromptText(params)
 	if userText == "" {
+		a.recordDelegation(reqCtx, sid, "completed", "", string(acp.StopReasonEndTurn), "")
 		return acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 	}
 
 	// 检查是否为 slash 命令
 	if handled, response := handleSlashCommand(userText, a.cmdRegistry); handled {
-		if response != "" {
+		if response != "" && a.conn != nil {
 			_ = a.conn.SessionUpdate(reqCtx, acp.SessionNotification{
 				SessionId: acp.SessionId(sid),
 				Update:    acp.UpdateAgentMessageText(response),
 			})
 		}
+		a.recordDelegation(reqCtx, sid, "completed", "", string(acp.StopReasonEndTurn), "")
 		return acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 	}
 
 	// 通知客户端：Agent 开始处理
-	if err := a.conn.SessionUpdate(reqCtx, acp.SessionNotification{
-		SessionId: acp.SessionId(sid),
-		Update:    acp.UpdateAgentMessageText(""),
-	}); err != nil {
-		if reqCtx.Err() != nil {
-			return acp.PromptResponse{StopReason: acp.StopReasonCancelled}, nil
+	if a.conn != nil {
+		if err := a.conn.SessionUpdate(reqCtx, acp.SessionNotification{
+			SessionId: acp.SessionId(sid),
+			Update:    acp.UpdateAgentMessageText(""),
+		}); err != nil {
+			if reqCtx.Err() != nil {
+				a.recordDelegation(reqCtx, sid, "failed", string(agentquality.FailureRuntime), string(acp.StopReasonCancelled), err.Error())
+				return acp.PromptResponse{StopReason: acp.StopReasonCancelled}, nil
+			}
 		}
 	}
 
 	// 启动实时流式推送 goroutine：订阅 EventBus 事件并转发给 ACP 客户端
 	streamCtx, streamCancel := context.WithCancel(reqCtx)
 	streamDone := make(chan struct{})
-	if eb := a.master.GetEventBus(); eb != nil {
+	if eb := a.master.GetEventBus(); eb != nil && a.conn != nil {
 		go func() {
 			defer close(streamDone)
 			streamSessionUpdates(streamCtx, a.conn, eb, sid, a.logger)
@@ -254,10 +268,12 @@ func (a *ClawAgent) Prompt(ctx context.Context, params acp.PromptRequest) (acp.P
 	streamCancel()
 	<-streamDone
 	if reqCtx.Err() != nil {
+		a.recordDelegation(reqCtx, sid, "failed", string(agentquality.FailureRuntime), string(acp.StopReasonCancelled), "")
 		return acp.PromptResponse{StopReason: acp.StopReasonCancelled}, nil
 	}
 	if err != nil {
 		a.logger.Error("Master 执行失败", zap.String("session_id", sid), zap.Error(err))
+		a.recordDelegation(reqCtx, sid, "failed", string(agentquality.FailureRuntime), "error", err.Error())
 		return acp.PromptResponse{}, err
 	}
 
@@ -271,15 +287,33 @@ func (a *ClawAgent) Prompt(ctx context.Context, params acp.PromptRequest) (acp.P
 	}
 
 	if output != "" {
-		if err := a.conn.SessionUpdate(reqCtx, acp.SessionNotification{
-			SessionId: acp.SessionId(sid),
-			Update:    acp.UpdateAgentMessageText(output),
-		}); err != nil && reqCtx.Err() != nil {
-			return acp.PromptResponse{StopReason: acp.StopReasonCancelled}, nil
+		if a.conn != nil {
+			if err := a.conn.SessionUpdate(reqCtx, acp.SessionNotification{
+				SessionId: acp.SessionId(sid),
+				Update:    acp.UpdateAgentMessageText(output),
+			}); err != nil && reqCtx.Err() != nil {
+				a.recordDelegation(reqCtx, sid, "failed", string(agentquality.FailureRuntime), string(acp.StopReasonCancelled), err.Error())
+				return acp.PromptResponse{StopReason: acp.StopReasonCancelled}, nil
+			}
 		}
 	}
 
+	a.recordDelegation(reqCtx, sid, "completed", "", string(acp.StopReasonEndTurn), "")
 	return acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+}
+
+func (a *ClawAgent) recordDelegation(ctx context.Context, sessionID string, status string, failureType string, stopReason string, errText string) {
+	if a.master == nil {
+		return
+	}
+	a.master.RecordDelegation(ctx, tools.DelegationEvent{
+		SessionID:   sessionID,
+		AgentType:   "acp",
+		Status:      status,
+		FailureType: failureType,
+		StopReason:  stopReason,
+		Error:       errText,
+	})
 }
 
 // extractPromptText 从 PromptRequest 中提取纯文本内容

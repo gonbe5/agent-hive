@@ -87,7 +87,7 @@ type SessionJournal struct {
 
 // JournalEvent 统一事件类型（三类事件合并后的扁平结构，用于回放时间线）
 type JournalEvent struct {
-	Type      string    `json:"type"`      // "tool_call" | "file_change" | "decision"
+	Type      string    `json:"type"` // "tool_call" | "file_change" | "decision"
 	Timestamp time.Time `json:"timestamp"`
 	// tool_call 字段
 	ToolName   string `json:"tool_name,omitempty"`
@@ -106,10 +106,15 @@ type JournalEvent struct {
 
 // JournalStats 画廊页统计摘要（批量查询用）
 type JournalStats struct {
-	ToolCallCount   int        `json:"tool_call_count"`
-	FileChangeCount int        `json:"file_change_count"`
-	DecisionCount   int        `json:"decision_count"`
-	StartedAt       time.Time  `json:"started_at"`
-	EndedAt         *time.Time `json:"ended_at,omitempty"`
-	HasError        bool       `json:"has_error"`
+	ToolCallCount         int        `json:"tool_call_count"`
+	FileChangeCount       int        `json:"file_change_count"`
+	DecisionCount         int        `json:"decision_count"`
+	StartedAt             time.Time  `json:"started_at"`
+	EndedAt               *time.Time `json:"ended_at,omitempty"`
+	HasError              bool       `json:"has_error"`
+	QualityErrorCount     int        `json:"quality_error_count,omitempty"`
+	DangerousCount        int        `json:"dangerous_count,omitempty"`
+	DelegationCount       int        `json:"delegation_count,omitempty"`
+	ACPCount              int        `json:"acp_count,omitempty"`
+	ContextPollutionCount int        `json:"context_pollution_count,omitempty"`
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNodeClient } from '../../hooks/useNodeClient';
 import type { WeChatConfigResponse, WeChatProtocolStatus } from '../../types/api';
@@ -11,7 +11,7 @@ export function WeChatSettings() {
   const [loading, setLoading] = useState(false);
   const showToast = useToastStore((s) => s.addToast);
 
-  const loadConfig = async () => {
+  const loadConfig = useCallback(async () => {
     try {
       const data = await client.getWeChatConfig();
       setConfig(data);
@@ -19,11 +19,11 @@ export function WeChatSettings() {
       console.error('Failed to load WeChat config:', error);
       showToast('error', t('runtimeConfig.loadFailed'));
     }
-  };
+  }, [client, showToast, t]);
 
   useEffect(() => {
     loadConfig();
-  }, []);
+  }, [loadConfig]);
 
   const handleUpdate = async (protocol: string, enabled: boolean, protocolConfig: Record<string, unknown>) => {
     setLoading(true);

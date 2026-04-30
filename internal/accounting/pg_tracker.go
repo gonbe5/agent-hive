@@ -3,6 +3,7 @@ package accounting
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,9 +24,11 @@ func NewPgTracker(pool *pgxpool.Pool, logger *zap.Logger) *PgTracker {
 // Record 记录一条 LLM 用量
 func (t *PgTracker) Record(ctx context.Context, entry UsageEntry) error {
 	_, err := t.pool.Exec(ctx,
-		`INSERT INTO usage_records (session_id, user_id, model, prompt_tokens, completion_tokens, cost_usd)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		`INSERT INTO usage_records
+		 (session_id, user_id, model, prompt_tokens, completion_tokens, cost_usd, task_type, quality_case_id, prompt_version, failure_type, final_status)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		entry.SessionID, entry.UserID, entry.Model, entry.PromptTokens, entry.CompletionTokens, entry.CostUSD,
+		entry.TaskType, entry.QualityCaseID, entry.PromptVersion, entry.FailureType, entry.FinalStatus,
 	)
 	if err != nil {
 		t.logger.Warn("记录用量失败", zap.Error(err))
@@ -96,6 +99,73 @@ func (t *PgTracker) GetCostByUser(ctx context.Context) ([]UserCost, error) {
 		result = append(result, uc)
 	}
 	return result, rows.Err()
+}
+
+// GetQualityCost 按 task/case/prompt 维度汇总质量成本。
+func (t *PgTracker) GetQualityCost(ctx context.Context) (*QualityCostSummary, error) {
+	summary := &QualityCostSummary{
+		ByTaskType:      map[string]ModelCost{},
+		ByQualityCase:   map[string]ModelCost{},
+		ByPromptVersion: map[string]ModelCost{},
+		ByFailureType:   map[string]ModelCost{},
+		ByFinalStatus:   map[string]ModelCost{},
+	}
+	if err := t.fillQualityCostMap(ctx, "task_type", summary.ByTaskType); err != nil {
+		return nil, err
+	}
+	if err := t.fillQualityCostMap(ctx, "quality_case_id", summary.ByQualityCase); err != nil {
+		return nil, err
+	}
+	if err := t.fillQualityCostMap(ctx, "prompt_version", summary.ByPromptVersion); err != nil {
+		return nil, err
+	}
+	if err := t.fillQualityCostMap(ctx, "failure_type", summary.ByFailureType); err != nil {
+		return nil, err
+	}
+	if err := t.fillQualityCostMap(ctx, "final_status", summary.ByFinalStatus); err != nil {
+		return nil, err
+	}
+
+	summary.TopQualityCases = make([]QualityCaseCost, 0, len(summary.ByQualityCase))
+	for id, cost := range summary.ByQualityCase {
+		summary.TopQualityCases = append(summary.TopQualityCases, QualityCaseCost{
+			QualityCaseID: id,
+			Tokens:        cost.Tokens,
+			CostUSD:       cost.CostUSD,
+			RequestCount:  cost.RequestCount,
+		})
+	}
+	sort.Slice(summary.TopQualityCases, func(i, j int) bool {
+		return summary.TopQualityCases[i].CostUSD > summary.TopQualityCases[j].CostUSD
+	})
+	if len(summary.TopQualityCases) > 20 {
+		summary.TopQualityCases = summary.TopQualityCases[:20]
+	}
+	return summary, nil
+}
+
+func (t *PgTracker) fillQualityCostMap(ctx context.Context, column string, out map[string]ModelCost) error {
+	rows, err := t.pool.Query(ctx,
+		`SELECT `+column+`, COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0),
+		        COALESCE(SUM(cost_usd),0), COUNT(*)
+		 FROM usage_records
+		 WHERE `+column+` <> ''
+		 GROUP BY `+column)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var key string
+		var cost ModelCost
+		if err := rows.Scan(&key, &cost.PromptTokens, &cost.CompletionTokens, &cost.CostUSD, &cost.RequestCount); err != nil {
+			return err
+		}
+		cost.Tokens = cost.PromptTokens + cost.CompletionTokens
+		out[key] = cost
+	}
+	return rows.Err()
 }
 
 // Cleanup 清理超过 retentionDays 天的历史记录，返回删除行数

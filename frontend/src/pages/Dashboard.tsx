@@ -40,7 +40,7 @@ export function Dashboard() {
       }
     };
     load();
-  }, [client]);
+  }, [client, addToast, t]);
 
   if (loading) {
     return (

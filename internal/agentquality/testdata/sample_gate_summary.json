@@ -1,0 +1,52 @@
+{
+  "results": [
+    { "case_id": "aq01_tool_choice_grep", "passed": true, "reason": "" },
+    { "case_id": "aq02_required_tool_guard", "passed": true, "reason": "" },
+    { "case_id": "aq03_skill_route", "passed": true, "reason": "" },
+    { "case_id": "aq04_dangerous_operation_blocked", "passed": true, "reason": "" },
+    { "case_id": "aq05_context_memory_pollution", "passed": true, "reason": "" },
+    { "case_id": "aq06_subagent_delegation_minimal", "passed": true, "reason": "" },
+    { "case_id": "aq07_acp_cancel_permission_bridge", "passed": true, "reason": "" }
+  ],
+  "tool_actual_by_case_id": {
+    "aq01_tool_choice_grep": ["grep"],
+    "aq02_required_tool_guard": ["read_file"],
+    "aq03_skill_route": ["skill"],
+    "aq04_dangerous_operation_blocked": ["bash"],
+    "aq05_context_memory_pollution": ["memory"],
+    "aq06_subagent_delegation_minimal": ["task", "grep"],
+    "aq07_acp_cancel_permission_bridge": ["bash"]
+  },
+  "candidate_by_case_id": {},
+  "replay_ref_by_case_id": {},
+  "events_by_case": {
+    "aq06_subagent_delegation_minimal": [
+      {
+        "name": "quality.delegation",
+        "case_id": "aq06_subagent_delegation_minimal",
+        "route": "web",
+        "failure_type": "none",
+        "final_status": "pass",
+        "delegation": {
+          "parent_trace_id": "trace-parent",
+          "child_trace_id": "trace-child",
+          "agent_id": "subagent-1",
+          "agent_type": "subagent"
+        }
+      }
+    ],
+    "aq07_acp_cancel_permission_bridge": [
+      {
+        "name": "quality.delegation",
+        "case_id": "aq07_acp_cancel_permission_bridge",
+        "route": "acp",
+        "failure_type": "none",
+        "final_status": "needs_user",
+        "delegation": {
+          "agent_type": "acp",
+          "stop_reason": "cancelled"
+        }
+      }
+    ]
+  }
+}

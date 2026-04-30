@@ -23,7 +23,7 @@ export function Agents() {
         addToast('error', msg);
       })
       .finally(() => setLoading(false));
-  }, [client]);
+  }, [client, addToast]);
 
   return (
     <div className="p-6 max-w-5xl mx-auto">

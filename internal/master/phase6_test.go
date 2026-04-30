@@ -13,6 +13,7 @@ import (
 	"github.com/chef-guo/agents-hive/internal/config"
 	"github.com/chef-guo/agents-hive/internal/llm"
 	"github.com/chef-guo/agents-hive/internal/mcphost"
+	"github.com/chef-guo/agents-hive/internal/runtimepolicy"
 	"github.com/chef-guo/agents-hive/internal/skills"
 	"github.com/chef-guo/agents-hive/internal/store"
 	"github.com/chef-guo/agents-hive/internal/subagent"
@@ -100,6 +101,10 @@ func (m *mockCostTracker) Cleanup(_ context.Context, _ int) (int64, error) {
 }
 func (m *mockCostTracker) GetCostByUser(_ context.Context) ([]accounting.UserCost, error) {
 	return nil, nil
+}
+
+func (m *mockCostTracker) GetQualityCost(_ context.Context) (*accounting.QualityCostSummary, error) {
+	return &accounting.QualityCostSummary{}, nil
 }
 
 func (m *mockCostTracker) SetSessionCost(sessionID string, cost float64) {
@@ -199,20 +204,19 @@ func TestSpawnAgent_ConcurrencyLimit(t *testing.T) {
 
 	// 验证实际执行 ToExecute 列表中的工具
 	for _, tc := range filter.ToExecute {
-		m.executeTool(context.Background(), session.ID, "", tc, "", "")
+		m.executeTool(context.Background(), session, "", tc, "", "")
 	}
 	assert.Equal(t, 3, callCount, "mock spawn_agent 应被调用 3 次")
 }
 
-// TestToolTimeout_2Minutes 验证单工具 2 分钟超时
-func TestToolTimeout_2Minutes(t *testing.T) {
+func TestToolTimeout_UsesRuntimePolicy(t *testing.T) {
 	m := newPhase6MasterWithMCPHost(t)
+	m.config.RuntimePolicy = runtimepolicy.Policy{ToolTimeout: 50 * time.Millisecond}.WithDefaults()
 
 	// 注册一个会阻塞的工具
 	m.mcpHost.RegisterTool(
 		mcphost.ToolDefinition{Name: "slow_tool", Description: "test"},
 		func(ctx context.Context, input json.RawMessage) (*mcphost.ToolResult, error) {
-			// 等待 context 取消（应在 2 分钟内被取消）
 			<-ctx.Done()
 			return nil, ctx.Err()
 		},
@@ -221,23 +225,19 @@ func TestToolTimeout_2Minutes(t *testing.T) {
 	session := newTestSession("test-timeout")
 	m.sessionMgr.SetSession(session)
 
-	// 使用一个短超时的 parent context 来加速测试
-	// 实际代码中 executeTool 对非豁免工具加 2 分钟超时
-	// 这里验证超时机制存在：用 100ms parent context，工具应被取消
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
 	tc := llm.ToolCall{ID: "timeout-1", Name: "slow_tool", Arguments: json.RawMessage(`{}`)}
-	result := m.executeTool(ctx, session.ID, "", tc, "", "")
+	start := time.Now()
+	result := m.executeTool(context.Background(), session, "", tc, "", "")
 
-	// 工具应因超时而失败
 	assert.True(t, result.IsError, "阻塞工具应因超时而返回错误")
 	assert.Contains(t, result.Content, "失败")
+	assert.Less(t, time.Since(start), 500*time.Millisecond)
 }
 
 // TestToolTimeout_QuestionExempt 验证 question 工具豁免 2 分钟超时
 // 豁免列表见 react_processor.go:727-733 的 switch 分支：
-//   question, parallel_dispatch, task, spawn_agent, skill, create_tool
+//
+//	question, parallel_dispatch, task, spawn_agent, skill, create_tool
 func TestToolTimeout_QuestionExempt(t *testing.T) {
 	// 验证 executeTool 中 question 工具不加额外超时
 	// 通过检查代码中的 switch 分支验证
@@ -274,7 +274,7 @@ func TestToolTimeout_QuestionExempt(t *testing.T) {
 	defer cancel()
 
 	tc := llm.ToolCall{ID: "q-1", Name: "question", Arguments: json.RawMessage(`{}`)}
-	result := m.executeTool(ctx, session.ID, "", tc, "", "")
+	result := m.executeTool(ctx, session, "", tc, "", "")
 
 	assert.True(t, questionCalled, "question 工具应被调用")
 	assert.False(t, result.IsError, "question 工具不应返回错误")
@@ -337,7 +337,7 @@ func TestExecuteTool_SessionIDInjection(t *testing.T) {
 	m.sessionMgr.SetSession(session)
 
 	tc := llm.ToolCall{ID: "inject-1", Name: "check_session", Arguments: json.RawMessage(`{}`)}
-	result := m.executeTool(context.Background(), session.ID, "", tc, "", "")
+	result := m.executeTool(context.Background(), session, "", tc, "", "")
 
 	assert.False(t, result.IsError, "工具不应返回错误")
 	assert.Equal(t, "session-inject-test", capturedSessionID,

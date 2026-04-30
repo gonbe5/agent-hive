@@ -1,9 +1,12 @@
 package acpclient
 
 import (
+	"context"
 	"testing"
 
 	"go.uber.org/zap/zaptest"
+
+	"github.com/chef-guo/agents-hive/internal/tools"
 )
 
 // TestPoolNewAndList 验证新建连接池和空列表
@@ -57,5 +60,23 @@ func TestPoolConnectInvalidTransport(t *testing.T) {
 	})
 	if err == nil {
 		t.Error("Connect 应对无效传输类型返回错误")
+	}
+}
+
+type poolObserver struct {
+	events []tools.DelegationEvent
+}
+
+func (o *poolObserver) RecordDelegation(_ context.Context, ev tools.DelegationEvent) {
+	o.events = append(o.events, ev)
+}
+
+func TestPoolWithDelegationObserverStoresObserver(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	observer := &poolObserver{}
+	pool := NewPoolWithObserver(logger, observer)
+
+	if pool.observer != observer {
+		t.Fatal("连接池应保存委派观察者，供远程 ACP Agent 记录质量事件")
 	}
 }

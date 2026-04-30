@@ -1,0 +1,99 @@
+package tools
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+
+	"go.uber.org/zap"
+
+	"github.com/chef-guo/agents-hive/internal/mcphost"
+)
+
+func TestRegisterBuiltinToolsRegistersToolSearch(t *testing.T) {
+	logger := zap.NewNop()
+	host := mcphost.NewHost(logger)
+
+	RegisterBuiltinTools(host, logger, nil, nil, nil, "", nil, nil, nil, nil, nil)
+
+	def, err := host.GetTool("tool_search")
+	if err != nil {
+		t.Fatalf("tool_search should be registered as builtin read-only tool: %v", err)
+	}
+	if !def.Core {
+		t.Fatal("tool_search should be a default-visible core tool for deferred discovery")
+	}
+}
+
+func TestToolSearchFindsRegisteredToolsWithoutMutatingRegistry(t *testing.T) {
+	logger := zap.NewNop()
+	host := mcphost.NewHost(logger)
+	host.RegisterTool(mcphost.ToolDefinition{
+		Name:              "alpha_read",
+		Description:       "读取 alpha 数据",
+		IsConcurrencySafe: true,
+	}, func(ctx context.Context, input json.RawMessage) (*mcphost.ToolResult, error) {
+		t.Fatal("tool_search must not execute matched tools")
+		return nil, nil
+	})
+	host.RegisterTool(mcphost.ToolDefinition{
+		Name:        "danger_delete",
+		Description: "删除危险数据",
+	}, func(ctx context.Context, input json.RawMessage) (*mcphost.ToolResult, error) {
+		t.Fatal("tool_search must not execute matched tools")
+		return nil, nil
+	})
+	registerToolSearch(host, logger)
+	beforeCount := len(host.ListTools())
+
+	input, _ := json.Marshal(map[string]any{
+		"query": "alpha",
+	})
+	result, err := host.ExecuteTool(context.Background(), "tool_search", input)
+	if err != nil {
+		t.Fatalf("ExecuteTool(tool_search): %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected tool_search error: %s", result.DecodeContent())
+	}
+	if afterCount := len(host.ListTools()); afterCount != beforeCount {
+		t.Fatalf("tool_search should not mutate registry: before=%d after=%d", beforeCount, afterCount)
+	}
+
+	var out struct {
+		Count   int `json:"count"`
+		Results []struct {
+			Name              string  `json:"name"`
+			Description       string  `json:"description"`
+			DangerLevel       string  `json:"danger_level"`
+			RequiresApproval  bool    `json:"requires_approval"`
+			IsConcurrencySafe bool    `json:"is_concurrency_safe"`
+			Score             float64 `json:"score"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(result.DecodeContent()), &out); err != nil {
+		t.Fatalf("decode tool_search output: %v; content=%s", err, result.DecodeContent())
+	}
+	if out.Count != 1 || len(out.Results) != 1 {
+		t.Fatalf("expected one alpha hit, got count=%d results=%d content=%s", out.Count, len(out.Results), result.DecodeContent())
+	}
+	got := out.Results[0]
+	if got.Name != "alpha_read" {
+		t.Fatalf("expected alpha_read hit, got %q", got.Name)
+	}
+	if got.Description == "" {
+		t.Fatal("expected description in result")
+	}
+	if got.DangerLevel == "" {
+		t.Fatal("expected danger_level metadata")
+	}
+	if got.RequiresApproval {
+		t.Fatal("read-only safe tool should not require approval")
+	}
+	if !got.IsConcurrencySafe {
+		t.Fatal("expected concurrency-safe metadata")
+	}
+	if got.Score <= 0 {
+		t.Fatalf("expected positive score, got %f", got.Score)
+	}
+}

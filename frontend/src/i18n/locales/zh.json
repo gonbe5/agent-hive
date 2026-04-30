@@ -18,6 +18,7 @@
     "adminLLM": "大模型管理",
     "adminAuthProviders": "认证管理",
     "adminPrompts": "Prompt 管理",
+    "adminQualityCandidates": "质量候选",
     "adminSettings": "系统设置",
     "backToChat": "返回对话",
     "preferences": "偏好设置",

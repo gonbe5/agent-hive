@@ -150,3 +150,37 @@ func TestStreamingExecutor_CanExecute(t *testing.T) {
 		t.Error("unsafe tool should be executable when unsafeCount=0")
 	}
 }
+
+func TestStreamingExecutor_AbortAllReturnsSyntheticResultsByID(t *testing.T) {
+	release := make(chan struct{})
+	execStarted := make(chan struct{})
+	exec := func(ctx context.Context, name string, input json.RawMessage) (*mcphost.ToolResult, error) {
+		close(execStarted)
+		<-release
+		return &mcphost.ToolResult{Content: json.RawMessage(`"late"`), IsError: false}, nil
+	}
+	tools := []mcphost.ToolDefinition{
+		{Name: "bash", IsConcurrencySafe: false},
+	}
+	se := NewStreamingExecutor(tools, exec)
+	se.AddTool(context.Background(), "call-1", "bash", json.RawMessage(`{}`))
+	se.AddTool(context.Background(), "call-2", "bash", json.RawMessage(`{}`))
+	<-execStarted
+
+	se.AbortAll("safe sibling failed")
+	results := se.GetResultsByID()
+	close(release)
+
+	for _, id := range []string{"call-1", "call-2"} {
+		result, ok := results[id]
+		if !ok {
+			t.Fatalf("aborted tool %s must still produce a synthetic tool result", id)
+		}
+		if result == nil || !result.IsError {
+			t.Fatalf("aborted tool %s result must be an error: %+v", id, result)
+		}
+		if got := result.DecodeContent(); got == "" || got == "late" {
+			t.Fatalf("aborted tool %s should use synthetic cancellation content, got %q", id, got)
+		}
+	}
+}

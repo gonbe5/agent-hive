@@ -5,7 +5,8 @@ import type { FileAttachment } from '../../types/api';
 import { useChatStore } from '../../store/chat';
 import { useNodeClient } from '../../hooks/useNodeClient';
 import { useToastStore } from '../../store/toast';
-import { formatFileSize, getFileIcon } from './shared';
+import { AttachmentIcon } from './AttachmentIcon';
+import { formatFileSize } from './attachmentUtils';
 
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB
 const MAX_FILE_COUNT = 10;
@@ -297,7 +298,7 @@ export function ChatInput({ onSend, onStop, disabled, placeholder }: Props) {
                       className="w-8 h-8 rounded object-cover"
                     />
                   ) : (
-                    getFileIcon(f.mime_type)
+                    <AttachmentIcon mimeType={f.mime_type} />
                   )}
                   <span className="truncate max-w-[120px] text-[var(--text-primary)]">{f.filename}</span>
                   <span className="text-[var(--text-secondary)]">{formatFileSize(f.size)}</span>

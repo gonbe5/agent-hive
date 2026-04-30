@@ -25,6 +25,7 @@ import (
 	"github.com/chef-guo/agents-hive/internal/memory"
 	"github.com/chef-guo/agents-hive/internal/observability"
 	"github.com/chef-guo/agents-hive/internal/plugin"
+	"github.com/chef-guo/agents-hive/internal/runtimepolicy"
 	"github.com/chef-guo/agents-hive/internal/security"
 	"github.com/chef-guo/agents-hive/internal/skills"
 	"github.com/chef-guo/agents-hive/internal/specdriven/ingress"
@@ -71,6 +72,7 @@ type Config struct {
 	MaxSessionCost              float64                    // P0-3: per-session 成本预算上限（USD），<=0 表示不限制（需要 PostgreSQL 成本追踪启用）
 	SpecDriven                  config.SpecDrivenConfig    // Spec-driven Phase 2 总开关（默认 mode=legacy，零成本短路 session_loop intake hook）
 	QualityGuards               config.QualityGuardsConfig // P0 质量护栏灰度开关（见 docs/计划与路线/Agent-质量护栏治理计划.md）
+	RuntimePolicy               runtimepolicy.Policy       // 运行期 timeout、容量和成本策略
 }
 
 // BroadcastMessage 是 WebSocket 广播消息
@@ -232,6 +234,7 @@ type Master struct {
 	journal        journal.Journal             // 开发日志（可选，nil 时不记录）
 	tracer         observability.Tracer        // 可观测性 Tracer（可选，nil 时不记录）
 	metricsWriter  observability.MetricsWriter // 可观测性 MetricsWriter（可选，nil 时不记录）
+	logWriter      observability.LogWriter     // 可观测性 LogWriter（可选，nil 时不记录）
 	obsCh          chan observabilityEntry     // 异步 observability 写入队列
 	obsDone        chan struct{}               // observability worker 退出信号
 	journalCh      chan journalEntry           // 异步 journal 写入队列（支持 tool call / file change / decision）
@@ -279,10 +282,18 @@ type Master struct {
 	// EnableStreamingExecutor 启用并发工具执行（默认 false，向后兼容）
 	// safe 工具（IsConcurrencySafe=true）并发执行，unsafe 工具串行
 	EnableStreamingExecutor bool
+
+	middlewarePipeline MiddlewarePipeline
 }
 
 // NewMaster 创建一个新的 Master agent
 func NewMaster(cfg Config, hitlCfg config.HITLConfig, registry *subagent.Registry, skillReg SkillRegistryProvider, st store.SessionStore, logger *zap.Logger) *Master {
+	cfg.RuntimePolicy = cfg.RuntimePolicy.WithDefaults()
+	if err := cfg.RuntimePolicy.Validate(); err != nil {
+		logger.Warn("runtime policy 非法，使用默认值", zap.Error(err))
+		cfg.RuntimePolicy = runtimepolicy.Default()
+	}
+
 	// 创建 PromptManager
 	promptLang := cfg.PromptLanguage
 	if promptLang == "" {
@@ -322,26 +333,27 @@ func NewMaster(cfg Config, hitlCfg config.HITLConfig, registry *subagent.Registr
 	sessionMgr := NewSessionManager(stopCh, logger)
 
 	m := &Master{
-		config:            cfg,
-		hitlConfig:        hitlCfg,
-		llmClient:         llmClient,
-		router:            cfg.Router,
-		forkExecutor:      nil, // 在 agentFactory 初始化后设置
-		transport:         transport,
-		registry:          registry,
-		skillReg:          skillReg,
-		pluginMgr:         cfg.PluginMgr,
-		logger:            logger,
-		llmPool:           llm.NewClientPool(logger),
-		store:             st,
-		sessionMgr:        sessionMgr,
-		hitlBroker:        hitlBroker,
-		eventBus:          eventBus,
-		stopCh:            stopCh,
-		syncInterval:      cfg.SyncInterval,
-		promptCtx:         NewPromptContext(promptMgr, providerKey),
-		compactionTracker: NewCompactionTracker(),
-		cronJobs:          make(map[string]*cronJobState),
+		config:             cfg,
+		hitlConfig:         hitlCfg,
+		llmClient:          llmClient,
+		router:             cfg.Router,
+		forkExecutor:       nil, // 在 agentFactory 初始化后设置
+		transport:          transport,
+		registry:           registry,
+		skillReg:           skillReg,
+		pluginMgr:          cfg.PluginMgr,
+		logger:             logger,
+		llmPool:            llm.NewClientPool(logger),
+		store:              st,
+		sessionMgr:         sessionMgr,
+		hitlBroker:         hitlBroker,
+		eventBus:           eventBus,
+		stopCh:             stopCh,
+		syncInterval:       cfg.SyncInterval,
+		promptCtx:          NewPromptContext(promptMgr, providerKey),
+		compactionTracker:  NewCompactionTracker(),
+		cronJobs:           make(map[string]*cronJobState),
+		middlewarePipeline: buildMiddlewarePipeline(cfg.QualityGuards),
 	}
 
 	// 加载自定义 Agent 定义和指令文件
@@ -690,6 +702,14 @@ func (m *Master) CostTracker() accounting.CostTracker {
 	return m.costTracker
 }
 
+// RuntimePolicySnapshot 返回当前生效的运行时策略。
+func (m *Master) RuntimePolicySnapshot() runtimepolicy.Policy {
+	if m == nil {
+		return runtimepolicy.Default()
+	}
+	return m.config.RuntimePolicy.WithDefaults()
+}
+
 // BuildLLMCompleteCallback 返回基于当前 asyncRecorder 的 LLM 完成回调，供固定 Agent 注册时使用。
 // 若 costTracker 尚未设置则返回 nil。
 func (m *Master) BuildLLMCompleteCallback() subagent.LLMCompleteCallback {
@@ -702,21 +722,24 @@ func (m *Master) BuildLLMCompleteCallback() subagent.LLMCompleteCallback {
 // buildLLMCompleteCallback 构建 LLM 完成回调，通过 AsyncRecorder.RecordUsage 异步写入（内部复用）
 func (m *Master) buildLLMCompleteCallback() subagent.LLMCompleteCallback {
 	return func(agentID, sessionID, userID, model string, usage llm.Usage) {
-		m.asyncRecorder.RecordUsage(sessionID, userID, model, usage)
+		m.asyncRecorder.RecordUsageWithMeta(sessionID, userID, model, usage, accounting.UsageMeta{TaskType: "subagent"})
 	}
 }
 
 // SetTracer 设置可观测性 Tracer
 func (m *Master) SetTracer(t observability.Tracer) {
 	m.tracer = t
-	m.obsCh = make(chan observabilityEntry, 512)
-	m.obsDone = make(chan struct{})
+	if m.obsCh == nil {
+		m.obsCh = make(chan observabilityEntry, 512)
+		m.obsDone = make(chan struct{})
+	}
 }
 
 // observabilityEntry 异步写入队列的条目（span 或 metric 二选一）
 type observabilityEntry struct {
 	span   *observability.Span
 	metric *observability.Metric
+	log    *observability.LogEntry
 }
 
 // journalEntry 异步 journal 写入队列的条目（三种类型三选一）
@@ -730,6 +753,15 @@ type journalEntry struct {
 // 如果 Tracer 尚未设置（obsCh 为 nil），也会初始化队列，确保 metrics-only 模式可用
 func (m *Master) SetMetricsWriter(w observability.MetricsWriter) {
 	m.metricsWriter = w
+	if m.obsCh == nil {
+		m.obsCh = make(chan observabilityEntry, 512)
+		m.obsDone = make(chan struct{})
+	}
+}
+
+// SetLogWriter 设置可观测性 LogWriter。
+func (m *Master) SetLogWriter(w observability.LogWriter) {
+	m.logWriter = w
 	if m.obsCh == nil {
 		m.obsCh = make(chan observabilityEntry, 512)
 		m.obsDone = make(chan struct{})
@@ -768,6 +800,9 @@ func (m *Master) StartObsWorker(ctx context.Context) {
 			}
 			if e.metric != nil && m.metricsWriter != nil {
 				_ = m.metricsWriter.Record(wCtx, *e.metric)
+			}
+			if e.log != nil && m.logWriter != nil {
+				_ = m.logWriter.Write(wCtx, *e.log)
 			}
 		}
 		for {
@@ -812,6 +847,17 @@ func (m *Master) enqueueMetric(metric observability.Metric) {
 	}
 	select {
 	case m.obsCh <- observabilityEntry{metric: &metric}:
+	default:
+	}
+}
+
+// enqueueLog 将 log entry 放入异步写入队列（nil 安全，队列满时丢弃）。
+func (m *Master) enqueueLog(entry observability.LogEntry) {
+	if m.obsCh == nil {
+		return
+	}
+	select {
+	case m.obsCh <- observabilityEntry{log: &entry}:
 	default:
 	}
 }

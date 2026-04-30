@@ -20,6 +20,22 @@ import (
 	"github.com/chef-guo/agents-hive/internal/mcphost"
 )
 
+type fakeSearchProvider struct {
+	name    string
+	results []SearchResult
+	err     error
+	calls   int
+}
+
+func (p *fakeSearchProvider) Name() string {
+	return p.name
+}
+
+func (p *fakeSearchProvider) Search(_ context.Context, _ string, _ *zap.Logger) ([]SearchResult, error) {
+	p.calls++
+	return p.results, p.err
+}
+
 // --- cleanHTML 单元测试 ---
 
 func TestCleanHTML(t *testing.T) {
@@ -662,6 +678,54 @@ func TestBuildSearchToolResult_StrictWithResults(t *testing.T) {
 	require.NotNil(t, result)
 	assert.False(t, result.IsError, "有结果时 strict=true 也不应报错")
 	assert.Contains(t, string(result.Content), "T1")
+}
+
+func TestBuildSearchToolResult_ReturnsStructuredEnvelope(t *testing.T) {
+	results := []SearchResult{
+		{Title: "T1", URL: "https://a.example", Description: "D1"},
+	}
+
+	result := buildSearchToolResult(results, 1, "q", true)
+	require.NotNil(t, result)
+	require.False(t, result.IsError)
+
+	var envelope SearchResultEnvelope
+	require.NoError(t, json.Unmarshal([]byte(result.DecodeContent()), &envelope))
+	assert.Equal(t, "duckduckgo", envelope.Provider)
+	assert.Equal(t, "ok", envelope.Status)
+	assert.Equal(t, results, envelope.Results)
+	assert.Empty(t, envelope.Error)
+	assert.False(t, envelope.Fallback.Used)
+}
+
+func TestExecuteWebSearch_UsesFallbackProviderWhenPrimaryFails(t *testing.T) {
+	primary := &fakeSearchProvider{
+		name: "primary",
+		err:  fmt.Errorf("primary unavailable"),
+	}
+	fallback := &fakeSearchProvider{
+		name: "fallback",
+		results: []SearchResult{
+			{Title: "Fallback", URL: "https://fallback.example", Description: "ok"},
+		},
+	}
+
+	envelope, err := executeWebSearch(context.Background(), websearchInput{
+		Query:      "q",
+		MaxResults: 10,
+	}, true, primary, fallback, zap.NewNop())
+
+	require.NoError(t, err)
+	require.Equal(t, 1, primary.calls)
+	require.Equal(t, 1, fallback.calls)
+	assert.Equal(t, "fallback", envelope.Provider)
+	assert.Equal(t, "ok", envelope.Status)
+	require.Len(t, envelope.Results, 1)
+	assert.Equal(t, "Fallback", envelope.Results[0].Title)
+	assert.True(t, envelope.Fallback.Used)
+	assert.Equal(t, "primary", envelope.Fallback.FromProvider)
+	assert.Equal(t, "fallback", envelope.Fallback.ToProvider)
+	assert.Contains(t, envelope.Fallback.Reason, "primary unavailable")
 }
 
 // --- registerWebSearch 集成测试 ---

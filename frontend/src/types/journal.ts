@@ -16,6 +16,53 @@ export interface JournalEvent {
   // decision 字段
   decision?: string;
   reason?: string;
+  quality_event?: QualityEventView;
+}
+
+export interface QualityEventView {
+  name: string;
+  failure_type?: string;
+  retry_reason?: string;
+  final_status?: string;
+  tool_decision?: {
+    expected?: string[];
+    actual?: string;
+    decision?: string;
+    args_hash?: string;
+  };
+  prompt?: {
+    key?: string;
+    version?: string;
+    source?: string;
+    language?: string;
+  };
+  context_build?: {
+    message_count?: number;
+    compressed?: boolean;
+    memory_injected?: boolean;
+    memory_ids?: number[];
+    skipped_memory_ids?: number[];
+    skipped_expired?: number;
+    skipped_low_trust?: number;
+    skipped_cross_user?: number;
+    skipped_token_budget?: number;
+    skipped_memory_total?: number;
+    attachment_count?: number;
+    prompt_versions?: string[];
+    estimated_tokens?: number;
+    contamination_check?: string;
+  };
+  delegation?: {
+    parent_trace_id?: string;
+    child_trace_id?: string;
+    agent_id?: string;
+    agent_type?: string;
+    group_id?: string;
+    spawn_depth?: number;
+    max_turns?: number;
+    tool_whitelist?: string[];
+    stop_reason?: string;
+  };
 }
 
 export interface JournalResponse {
@@ -30,6 +77,11 @@ export interface JournalStats {
   started_at: string;
   ended_at?: string;
   has_error: boolean;
+  quality_error_count?: number;
+  dangerous_count?: number;
+  delegation_count?: number;
+  acp_count?: number;
+  context_pollution_count?: number;
 }
 
 export interface JournalStatsResponse {
@@ -72,4 +124,22 @@ export function getCharacterState(event: JournalEvent): CharacterState {
   if (runTools.includes(tool)) return 'running';
 
   return 'running';
+}
+
+export function attachQualityEvent(event: JournalEvent): JournalEvent {
+  if (event.type !== 'decision' || !event.reason) return event;
+
+  try {
+    const parsed = JSON.parse(event.reason) as unknown;
+    if (!isQualityEventView(parsed)) return event;
+    return { ...event, quality_event: parsed };
+  } catch {
+    return event;
+  }
+}
+
+function isQualityEventView(value: unknown): value is QualityEventView {
+  if (!value || typeof value !== 'object') return false;
+  const name = (value as { name?: unknown }).name;
+  return typeof name === 'string' && name.startsWith('quality.');
 }

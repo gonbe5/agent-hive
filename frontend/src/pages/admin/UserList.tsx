@@ -31,7 +31,7 @@ export function UserList() {
     } finally {
       setLoading(false);
     }
-  }, [client, query, page]);
+  }, [client, query, page, addToast]);
 
   useEffect(() => { load(); }, [load]);
 

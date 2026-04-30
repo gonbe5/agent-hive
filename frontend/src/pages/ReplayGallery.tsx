@@ -5,7 +5,7 @@ import type { JournalStats } from '../types/journal';
 import { ReplayCard } from '../components/replay/ReplayCard';
 import { Search, SlidersHorizontal, Hexagon } from 'lucide-react';
 
-type FilterStatus = 'all' | 'success' | 'error' | 'live';
+type FilterStatus = 'all' | 'success' | 'error' | 'live' | 'quality_error' | 'dangerous' | 'delegation' | 'acp' | 'context';
 type SortBy = 'newest' | 'longest' | 'most_tools';
 
 const filterOptions: { value: FilterStatus; label: string }[] = [
@@ -13,6 +13,11 @@ const filterOptions: { value: FilterStatus; label: string }[] = [
   { value: 'success', label: '成功' },
   { value: 'error', label: '失败' },
   { value: 'live', label: '进行中' },
+  { value: 'quality_error', label: '质量失败' },
+  { value: 'dangerous', label: '危险' },
+  { value: 'delegation', label: '委派' },
+  { value: 'acp', label: 'ACP' },
+  { value: 'context', label: '上下文' },
 ];
 
 const sortOptions: { value: SortBy; label: string }[] = [
@@ -65,6 +70,11 @@ export function ReplayGallery() {
         if (filter === 'success') return !st.has_error && st.ended_at;
         if (filter === 'error') return st.has_error;
         if (filter === 'live') return !st.ended_at;
+        if (filter === 'quality_error') return (st.quality_error_count ?? 0) > 0;
+        if (filter === 'dangerous') return (st.dangerous_count ?? 0) > 0;
+        if (filter === 'delegation') return (st.delegation_count ?? 0) > 0;
+        if (filter === 'acp') return (st.acp_count ?? 0) > 0;
+        if (filter === 'context') return (st.context_pollution_count ?? 0) > 0;
         return true;
       });
     }

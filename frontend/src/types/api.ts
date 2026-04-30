@@ -149,6 +149,80 @@ export interface AdminSkillDetail extends AdminSkillItem {
   content: string;
 }
 
+export type QualityCandidateStatus = 'new' | 'reviewing' | 'approved' | 'rejected' | 'promoted';
+
+export interface QualityCandidateCase {
+  id: string;
+  name: string;
+  route: string;
+  input: string;
+  expected_tools?: string[];
+  allowed_tools?: string[];
+  expected_skills?: string[];
+  expected_agents?: string[];
+  scenario?: string;
+  expected_status: string;
+  failure_type?: string;
+  risk?: string;
+  required: boolean;
+  notes?: string;
+}
+
+export type QualityOptimizationSuggestionKind = 'prompt_diff_suggestion' | 'tool_description_suggestion' | 'skill_draft';
+
+export interface QualityOptimizationSuggestion {
+  kind: QualityOptimizationSuggestionKind;
+  title: string;
+  target?: string;
+  rationale: string;
+  proposed: string;
+  review_required: boolean;
+}
+
+export interface QualityCandidateRecord {
+  id: string;
+  status: QualityCandidateStatus;
+  route: string;
+  session_id: string;
+  replay_ref: string;
+  input: string;
+  case: QualityCandidateCase;
+  failure_type: string;
+  risk: string;
+  fingerprint: string;
+  source_event: Record<string, unknown>;
+  review_note?: string;
+  created_by?: string;
+  reviewed_by?: string;
+  promoted_case_id?: string;
+  optimization_suggestions?: QualityOptimizationSuggestion[];
+  golden_case?: QualityCandidateCase;
+  created_at: string;
+  updated_at: string;
+  reviewed_at?: string;
+}
+
+export interface QualityCandidateUpdateRequest {
+  status: QualityCandidateStatus;
+  review_note?: string;
+  promoted_case_id?: string;
+}
+
+export interface QualityCandidateCreateRequest {
+  session_id: string;
+  replay_ref?: string;
+  event_index?: number;
+  input: string;
+  quality_event: unknown;
+}
+
+export interface QualityCandidatesResponse {
+  candidates: QualityCandidateRecord[];
+  total: number;
+  page: number;
+  size: number;
+}
+
 // 健康检查
 export interface Health {
   status: string;
@@ -405,6 +479,28 @@ export interface UsageSummary {
   by_model: Record<string, { tokens: number; cost_usd: number }>;
 }
 
+export interface UsageModelCost {
+  cost_usd: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  tokens: number;
+  request_count?: number;
+}
+
+export interface UsageQualityCost {
+  by_task_type: Record<string, UsageModelCost>;
+  by_quality_case: Record<string, UsageModelCost>;
+  by_prompt_version: Record<string, UsageModelCost>;
+  by_failure_type?: Record<string, UsageModelCost>;
+  by_final_status?: Record<string, UsageModelCost>;
+  top_quality_cases: Array<{
+    quality_case_id: string;
+    tokens: number;
+    cost_usd: number;
+    request_count: number;
+  }>;
+}
+
 export interface AdminProvider {
   name: string;
   provider_type: string;
@@ -422,6 +518,18 @@ export interface PromptRecord {
   content: string;
   updated_at: string;
   updated_by: string;
+}
+
+export interface PromptSmokeEvalRequest {
+  key: string;
+  language: string;
+  content: string;
+}
+
+export interface PromptSmokeEvalResponse {
+  ok: boolean;
+  checked_cases: number;
+  warnings: string[];
 }
 
 // LLM Provider 管理

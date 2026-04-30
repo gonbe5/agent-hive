@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/chef-guo/agents-hive/internal/accounting"
+	"github.com/chef-guo/agents-hive/internal/agentquality"
 	"github.com/chef-guo/agents-hive/internal/airouter"
 	"github.com/chef-guo/agents-hive/internal/auth"
 	"github.com/chef-guo/agents-hive/internal/channel"
@@ -37,36 +38,44 @@ type promptLoaderInterface interface {
 	InvalidateDBCache(key string)
 }
 
+type qualityCandidateStore interface {
+	UpsertCandidate(ctx context.Context, rec agentquality.CandidateRecord) (*agentquality.CandidateRecord, error)
+	ListCandidates(ctx context.Context, filter agentquality.CandidateFilter) ([]agentquality.CandidateRecord, int, error)
+	GetCandidate(ctx context.Context, id string) (*agentquality.CandidateRecord, bool, error)
+	UpdateCandidateStatus(ctx context.Context, id string, status agentquality.CandidateStatus, reviewer, note, promotedCaseID string) error
+}
+
 // Server 是 HTTP API 服务器
 type Server struct {
-	httpServer         *http.Server
-	master             *master.Master
-	skillRegistry      *skills.OverlayRegistry
-	streamHandler      *streaming.StreamHandler
-	wsHandler          *streaming.WSHandler
-	hitlConfig         config.HITLConfig
-	corsOrigins        []string
-	serverPort         string
-	logger             *zap.Logger
-	mux                *http.ServeMux              // 存储 mux 引用，支持动态追加路由
-	webuiEnabled       bool                        // 是否启用前端控制台
-	config             *config.Config              // 完整配置（用于配置管理 API）
-	configMu           sync.RWMutex                // 保护 config 并发读写
-	feishuIngressMode  config.FeishuIngressMode    // 飞书已提交运行时入口模式
-	feishuWebhookGate  config.FeishuIngressMode    // 飞书 webhook gate 当前放行模式
-	configPath         string                      // 配置文件路径（用于保存配置）
-	channelRouter      *channel.Router             // Channel 路由器（用于查询插件状态）
-	store              store.Store                 // 统一存储（PG），用于模型/配置管理
-	reloadProtocolFunc func(protocol string) error // 协议热加载回调
-	authEngine         *auth.Engine
-	costTracker        accounting.CostTracker
-	promptStore        promptStoreInterface  // Prompt CRUD 存储（可选）
-	promptLoader       promptLoaderInterface // PromptLoader 缓存失效（可选）
-	aiRouter           *airouter.Router      // AI 路由器（可选，LLM CRUD 后触发热重载）
-	skillStore         skillStoreInterface   // Skill CRUD 存储（可选）
-	feishuHealthClient *feishu.Client
-	pushService        *push.Service
-	feishuAuditSink    feishu.AuditSink
+	httpServer            *http.Server
+	master                *master.Master
+	skillRegistry         *skills.OverlayRegistry
+	streamHandler         *streaming.StreamHandler
+	wsHandler             *streaming.WSHandler
+	hitlConfig            config.HITLConfig
+	corsOrigins           []string
+	serverPort            string
+	logger                *zap.Logger
+	mux                   *http.ServeMux              // 存储 mux 引用，支持动态追加路由
+	webuiEnabled          bool                        // 是否启用前端控制台
+	config                *config.Config              // 完整配置（用于配置管理 API）
+	configMu              sync.RWMutex                // 保护 config 并发读写
+	feishuIngressMode     config.FeishuIngressMode    // 飞书已提交运行时入口模式
+	feishuWebhookGate     config.FeishuIngressMode    // 飞书 webhook gate 当前放行模式
+	configPath            string                      // 配置文件路径（用于保存配置）
+	channelRouter         *channel.Router             // Channel 路由器（用于查询插件状态）
+	store                 store.Store                 // 统一存储（PG），用于模型/配置管理
+	reloadProtocolFunc    func(protocol string) error // 协议热加载回调
+	authEngine            *auth.Engine
+	costTracker           accounting.CostTracker
+	promptStore           promptStoreInterface  // Prompt CRUD 存储（可选）
+	promptLoader          promptLoaderInterface // PromptLoader 缓存失效（可选）
+	aiRouter              *airouter.Router      // AI 路由器（可选，LLM CRUD 后触发热重载）
+	skillStore            skillStoreInterface   // Skill CRUD 存储（可选）
+	qualityCandidateStore qualityCandidateStore
+	feishuHealthClient    *feishu.Client
+	pushService           *push.Service
+	feishuAuditSink       feishu.AuditSink
 }
 
 type pushScheduleStore interface {
@@ -254,6 +263,10 @@ func (s *Server) SetFeishuAuditSink(sink feishu.AuditSink) {
 // SetSkillStore 注入 Skill CRUD 存储（可选，nil 时 skill 管理 API 返回 503）
 func (s *Server) SetSkillStore(ss skillStoreInterface) {
 	s.skillStore = ss
+}
+
+func (s *Server) SetQualityCandidateStore(store qualityCandidateStore) {
+	s.qualityCandidateStore = store
 }
 
 func (s *Server) SetFeishuHealthClient(client *feishu.Client) {

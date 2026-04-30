@@ -159,7 +159,7 @@ func TestParallelDispatch(t *testing.T) {
 			broadcaster := &mockBroadcaster{}
 
 			executor := &mockTaskExecutor{executeFn: tt.executeFn}
-			registerParallelDispatch(host, executor, broadcaster, logger)
+			registerParallelDispatch(host, executor, broadcaster, logger, nil)
 
 			// 构造调用上下文
 			depth := 0
@@ -253,7 +253,7 @@ func TestParallelDispatch_ConcurrencyLimit(t *testing.T) {
 		},
 	}
 
-	registerParallelDispatch(host, executor, nil, logger)
+	registerParallelDispatch(host, executor, nil, logger, nil)
 
 	ctx := WithToolContext(context.Background(), &ToolContext{
 		CallerType: CallerMaster,
@@ -294,7 +294,7 @@ func TestParallelDispatch_Registration(t *testing.T) {
 	host := mcphost.NewHost(logger)
 
 	executor := &mockTaskExecutor{}
-	registerParallelDispatch(host, executor, nil, logger)
+	registerParallelDispatch(host, executor, nil, logger, nil)
 
 	// 验证工具已注册
 	tools := host.ListTools()
@@ -326,7 +326,7 @@ func TestParallelDispatch_TaskTimeout(t *testing.T) {
 		},
 	}
 
-	registerParallelDispatch(host, executor, nil, logger)
+	registerParallelDispatch(host, executor, nil, logger, nil)
 
 	ctx := WithToolContext(context.Background(), &ToolContext{
 		CallerType: CallerMaster,
@@ -383,7 +383,7 @@ func TestParallelDispatch_ContextCancellation(t *testing.T) {
 		},
 	}
 
-	registerParallelDispatch(host, executor, nil, logger)
+	registerParallelDispatch(host, executor, nil, logger, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ctx = WithToolContext(ctx, &ToolContext{
@@ -443,7 +443,7 @@ func TestParallelDispatch_TimeoutUpperBound(t *testing.T) {
 		},
 	}
 
-	registerParallelDispatch(host, executor, nil, logger)
+	registerParallelDispatch(host, executor, nil, logger, nil)
 
 	ctx := WithToolContext(context.Background(), &ToolContext{
 		CallerType: CallerMaster,
@@ -496,7 +496,7 @@ func TestParallelDispatch_InvalidJSON(t *testing.T) {
 	host := mcphost.NewHost(logger)
 
 	executor := &mockTaskExecutor{}
-	registerParallelDispatch(host, executor, nil, logger)
+	registerParallelDispatch(host, executor, nil, logger, nil)
 
 	ctx := WithToolContext(context.Background(), &ToolContext{
 		CallerType: CallerMaster,
@@ -525,7 +525,7 @@ func TestParallelDispatch_SystemAgentDenyList(t *testing.T) {
 			return "不应该执行", nil
 		},
 	}
-	registerParallelDispatch(host, executor, nil, logger)
+	registerParallelDispatch(host, executor, nil, logger, nil)
 
 	ctx := WithToolContext(context.Background(), &ToolContext{
 		CallerType: CallerMaster,

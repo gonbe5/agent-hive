@@ -24,7 +24,9 @@ import type { Message } from '../../types/api';
 import type { Artifact } from '../../store/canvas';
 import { formatTimeOnly, isValidTimestamp } from '../../utils/date';
 import { useCanvasStore } from '../../store/canvas';
-import { ClawIcon, formatFileSize, getFileIcon as getAttachmentIcon } from './shared';
+import { AttachmentIcon } from './AttachmentIcon';
+import { ClawIcon } from './shared';
+import { formatFileSize } from './attachmentUtils';
 import { useChatStore } from '../../store/chat';
 import { getToolDisplayName } from '../../utils/toolName';
 import { ArtifactCard } from './ArtifactCard';
@@ -136,7 +138,7 @@ export const MessageBubble = memo(function MessageBubble({
                         />
                       ) : (
                         <div key={i} className="flex items-center gap-1.5 px-2 py-1 bg-[var(--bg-secondary)] rounded-lg text-xs text-[var(--text-secondary)]">
-                          {getAttachmentIcon(att.mime_type)}
+                          <AttachmentIcon mimeType={att.mime_type} />
                           <span className="truncate max-w-[120px]">{att.filename}</span>
                           <span>{formatFileSize(att.size)}</span>
                         </div>

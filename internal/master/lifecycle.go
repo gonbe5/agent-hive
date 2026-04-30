@@ -8,6 +8,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/chef-guo/agents-hive/internal/agentquality"
 	"github.com/chef-guo/agents-hive/internal/errs"
 	"github.com/chef-guo/agents-hive/internal/observability"
 	"github.com/chef-guo/agents-hive/internal/plugin"
@@ -197,12 +198,12 @@ func (m *Master) startBackgroundSync(ctx context.Context) {
 // createPermissionPromptFn 创建权限请求提示函数。
 //
 // 权限极简架构（v2, add-spec-driven-cognition Phase 1）：
-//   1. 非 shell 家族工具 → 直接 Granted:true（Input 是结构化 JSON，不是 shell 文本）
-//   2. shell 家族工具 → 先调 SafeExecutor.MatchPolicy
-//      - PolicyDeny → Granted:false（绝对禁止）+ audit log + metric
-//      - PolicyAsk → 走 HITL 审批（仅高风险/破坏性命令会命中这档）
-//      - PolicyAllow / 默认 / 命令解析失败（safe-deny）→ 对应分支
-//   3. strict 模式（PermissionMode=="strict"）兜底：跳过 default-allow，全部走 HITL
+//  1. 非 shell 家族工具 → 直接 Granted:true（Input 是结构化 JSON，不是 shell 文本）
+//  2. shell 家族工具 → 先调 SafeExecutor.MatchPolicy
+//     - PolicyDeny → Granted:false（绝对禁止）+ audit log + metric
+//     - PolicyAsk → 走 HITL 审批（仅高风险/破坏性命令会命中这档）
+//     - PolicyAllow / 默认 / 命令解析失败（safe-deny）→ 对应分支
+//  3. strict 模式（PermissionMode=="strict"）兜底：跳过 default-allow，全部走 HITL
 //
 // 设计 invariant：常规工具和安全命令默认放行；真正高风险命令才进入审批。
 func (m *Master) createPermissionPromptFn() func(context.Context, skills.PermissionRequest) (skills.PermissionResponse, error) {
@@ -233,8 +234,8 @@ func (m *Master) createPermissionPromptFn() func(context.Context, skills.Permiss
 				Name:  "security.shell_input_malformed_total",
 				Value: 1,
 				Labels: map[string]any{
-					"tool":       req.ToolName,
-					"session_id": sessionID,
+					"tool_name": req.ToolName,
+					"reason":    "malformed_input",
 				},
 			})
 			return skills.PermissionResponse{Granted: false}, nil
@@ -253,8 +254,8 @@ func (m *Master) createPermissionPromptFn() func(context.Context, skills.Permiss
 				Name:  "security.safe_executor_missing_total",
 				Value: 1,
 				Labels: map[string]any{
-					"tool":       req.ToolName,
-					"session_id": sessionID,
+					"tool_name": req.ToolName,
+					"reason":    "safe_executor_missing",
 				},
 			})
 			return skills.PermissionResponse{Granted: false}, nil
@@ -269,20 +270,47 @@ func (m *Master) createPermissionPromptFn() func(context.Context, skills.Permiss
 				zap.String("command", cmd),
 				zap.String("pattern", pattern),
 			)
-				m.enqueueMetric(observability.Metric{
-					Name:  "security.policy_deny_total",
-					Value: 1,
-					Labels: map[string]any{
-						"tool":       req.ToolName,
-						"session_id": sessionID,
-						"pattern":    pattern,
-					},
-				})
+			m.emitQualityEvent("", "", sessionID, agentquality.Event{
+				Name:        agentquality.EventPermissionDecision,
+				Route:       routeFromSessionID(sessionID),
+				FailureType: agentquality.FailurePermission,
+				FinalStatus: agentquality.StatusBlocked,
+				Attributes: map[string]any{
+					"tool_name": req.ToolName,
+					"policy":    "deny",
+					"pattern":   pattern,
+				},
+			})
+			m.enqueueMetric(observability.Metric{
+				Name:  "security.policy_deny_total",
+				Value: 1,
+				Labels: map[string]any{
+					"tool_name": req.ToolName,
+					"policy":    "deny",
+					"route":     routeFromSessionID(sessionID),
+				},
+			})
 			return skills.PermissionResponse{Granted: false}, nil
 
 		case security.PolicyAsk:
 			// PolicyAsk 一律走 HITL 审批。飞书 IM 已具备卡片审批回路，
 			// 再保留 IM auto-allow 会导致"根本收不到审批卡片"。
+			m.emitQualityEvent("", "", sessionID, agentquality.Event{
+				Name:        agentquality.EventPermissionDecision,
+				Route:       routeFromSessionID(sessionID),
+				FailureType: agentquality.FailurePermission,
+				FinalStatus: agentquality.StatusNeedsUser,
+				Attributes: map[string]any{
+					"tool_name": req.ToolName,
+					"policy":    "ask",
+					"pattern":   pattern,
+				},
+			})
+			m.enqueueMetric(observability.Metric{
+				Name:   "security.dangerous_operation_ask_total",
+				Value:  1,
+				Labels: map[string]any{"tool_name": req.ToolName, "policy": "ask", "route": routeFromSessionID(sessionID)},
+			})
 			return m.requestHITLPermission(ctx, req, sessionID)
 
 		default:
@@ -297,8 +325,8 @@ func (m *Master) createPermissionPromptFn() func(context.Context, skills.Permiss
 
 // requestHITLPermission 走 legacy HITL 审批流程。
 // 从旧 createPermissionPromptFn 抽出，保持行为完全一致，仅供两种场景调用：
-//   1. PolicyAsk + 非 IM 会话
-//   2. PermissionMode=="strict" 模式（一键回滚路径）
+//  1. PolicyAsk + 非 IM 会话
+//  2. PermissionMode=="strict" 模式（一键回滚路径）
 func (m *Master) requestHITLPermission(ctx context.Context, req skills.PermissionRequest, sessionID string) (skills.PermissionResponse, error) {
 	inputReq := &InputRequest{
 		ID:          m.hitlBroker.NextInputID("perm"),

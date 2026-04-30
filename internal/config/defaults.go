@@ -191,17 +191,18 @@ var DefaultToolPolicyConfig = ToolPolicyConfig{
 		{Name: "web", Tools: []string{"websearch", "webfetch", "browser_interact"}},
 		{Name: "lsp", Tools: []string{"lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols", "lsp_diagnostics", "lsp_rename", "lsp_code_action", "lsp_format", "lsp_completion"}},
 		{Name: "agent", Tools: []string{"spawn_agent", "parallel_dispatch", "task"}},
+		{Name: "discovery", Tools: []string{"tool_search"}},
 	},
 	Profiles: []ToolProfileConfig{
 		{Name: "full", Tools: []string{"*"}},
-		{Name: "coding", Tools: []string{"group:fs", "group:runtime", "group:web", "group:lsp", "skill", "memory", "batch", "question"}},
+		{Name: "coding", Tools: []string{"group:fs", "group:runtime", "group:web", "group:lsp", "group:discovery", "skill", "memory", "batch", "question"}},
 		{Name: "readonly", Tools: []string{"read_file", "glob", "grep", "ls", "websearch", "webfetch"}},
 		{Name: "messaging", Tools: []string{"send_im_message", "wechat_ops", "skill"}},
 		// Master 编排器最小工具集：只保留路由/委托/会话管理所需工具，不持有高副作用执行工具
 		{Name: "master", Tools: []string{"skill", "memory", "question", "taskboard", "task", "spawn_agent", "parallel_dispatch"}},
 		// P0-3: Master 直接执行 profile — 包含所有常用工具，Master ReAct 循环直接执行任务
 		{Name: "master_direct", Tools: []string{
-			"group:fs", "group:runtime", "group:web", "group:lsp", "group:agent",
+			"group:fs", "group:runtime", "group:web", "group:lsp", "group:agent", "group:discovery",
 			"create_tool", "remove_tool",
 			"skill", "memory", "question", "taskboard", "batch",
 			"send_im_message", "feishu_api",

@@ -253,6 +253,20 @@ func (s *Server) handleUsageByModel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"by_model": summary.ByModel})
 }
 
+// handleUsageQuality GET /api/v1/admin/usage/quality
+func (s *Server) handleUsageQuality(w http.ResponseWriter, r *http.Request) {
+	if s.costTracker == nil {
+		writeJSON(w, http.StatusServiceUnavailable, ErrorResponse{Error: "成本追踪未启用", Code: errs.CodeInternal})
+		return
+	}
+	summary, err := s.costTracker.GetQualityCost(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: err.Error(), Code: errs.CodeInternal})
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
+}
+
 // ── Provider 管理 ─────────────────────────────────────────────────────────────
 
 // handleAdminListProviders GET /api/v1/admin/auth/providers
