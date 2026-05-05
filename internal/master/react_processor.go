@@ -885,11 +885,18 @@ func (m *Master) runReActLoop(
 			}
 			// P0-3 Phase 5.1: 循环检测
 			loopWarned := false
-			switch detector.check(resp.ToolCalls) {
+			loopCheckResult := detector.check(resp.ToolCalls)
+			toolNames := make([]string, len(resp.ToolCalls))
+			for i, tc := range resp.ToolCalls {
+				toolNames[i] = tc.Name
+			}
+			switch loopCheckResult {
 			case "hard_stop":
 				m.logger.Warn("循环检测：相同工具组合连续出现 5 次，强制终止",
 					zap.String("session_id", session.ID),
 					zap.Int("iteration", i+1),
+					zap.Strings("tools", toolNames),
+					zap.Int("consecutive_same", detector.consecutiveSame),
 				)
 				m.appendSessionMessage(session, llm.MessageWithTools{
 					Role:      "system",
@@ -903,15 +910,13 @@ func (m *Master) runReActLoop(
 				m.logger.Warn("循环检测：相同工具组合连续出现 3 次，注入警告",
 					zap.String("session_id", session.ID),
 					zap.Int("iteration", i+1),
+					zap.Strings("tools", toolNames),
+					zap.Int("consecutive_same", detector.consecutiveSame),
 				)
 				loopWarned = true // 延迟到工具执行后注入，避免破坏 assistant(tool_calls) → tool(results) 消息顺序
 			}
 
 			// 广播工具调用状态
-			toolNames := make([]string, len(resp.ToolCalls))
-			for i, tc := range resp.ToolCalls {
-				toolNames[i] = tc.Name
-			}
 			m.logger.Info("开始执行工具调用",
 				zap.String("session_id", session.ID),
 				zap.Int("iteration", i+1),
@@ -1590,12 +1595,16 @@ func (m *Master) logDecisionIfFinal(_ context.Context, session *SessionState) {
 
 // loopDetector 检测 ReAct 循环中的重复工具调用模式。
 // 两层检测：
-//  1. 批次级：对每轮所有 tool_call 的名称排序后 hash，>=3 warn，>=5 hard_stop（原有逻辑）
-//  2. 调用级：per-call 的 tool+args 连续失败计数，同一 fingerprint 连续失败 >=2 次触发 early_stop
+//  1. 批次级：对每轮所有 tool_call 的 tool+args 排序后 hash，连续 >=3 warn，连续 >=5 hard_stop。
+//  2. 调用级：per-call 的 tool+args 连续失败计数，同一 fingerprint 连续失败 >=2 次触发 early_stop。
+//
+// 批次级必须看参数且必须按连续计数，否则正常的连续 read_file/grep 探索会被误判成循环。
 type loopDetector struct {
-	hashes       []string
-	window       int            // 滑动窗口大小
-	callFailures map[string]int // key = tool+args fingerprint, value = 连续失败次数
+	hashes          []string
+	window          int            // 滑动窗口大小，仅保留诊断历史
+	lastHash        string         // 最近一轮批次指纹
+	consecutiveSame int            // 相同批次指纹连续出现次数
+	callFailures    map[string]int // key = tool+args fingerprint, value = 连续失败次数
 }
 
 func newLoopDetector(window int) *loopDetector {
@@ -1603,23 +1612,23 @@ func newLoopDetector(window int) *loopDetector {
 }
 
 // check 返回 "ok"、"warn" 或 "hard_stop"（批次级检测）。
-// count 包含当前这次：先 append 再统计，确保 warn@3, hard_stop@5 精确匹配。
+// count 包含当前这次：先更新连续计数，确保 warn@3, hard_stop@5 精确匹配。
 func (d *loopDetector) check(toolCalls []llm.ToolCall) string {
 	hash := computeToolCallHash(toolCalls)
 	d.hashes = append(d.hashes, hash)
 	if len(d.hashes) > d.window {
 		d.hashes = d.hashes[1:]
 	}
-	count := 0
-	for _, h := range d.hashes {
-		if h == hash {
-			count++
-		}
+	if hash == d.lastHash {
+		d.consecutiveSame++
+	} else {
+		d.lastHash = hash
+		d.consecutiveSame = 1
 	}
-	if count >= 5 {
+	if d.consecutiveSame >= 5 {
 		return "hard_stop"
 	}
-	if count >= 3 {
+	if d.consecutiveSame >= 3 {
 		return "warn"
 	}
 	return "ok"
@@ -1637,15 +1646,15 @@ func (d *loopDetector) recordCallResult(fingerprint string, isError bool) bool {
 	return d.callFailures[fingerprint] >= 2
 }
 
-// computeToolCallHash 对工具名称排序后计算 SHA-256 hash。
-// 只比较名称组合，不含 arguments，平衡精确度和误报率。
+// computeToolCallHash 对工具名 + 规范化参数排序后计算 SHA-256 hash。
+// 只有同一组工具以同一参数重复出现时才算批次级循环。
 func computeToolCallHash(toolCalls []llm.ToolCall) string {
-	names := make([]string, len(toolCalls))
+	fingerprints := make([]string, len(toolCalls))
 	for i, tc := range toolCalls {
-		names[i] = tc.Name
+		fingerprints[i] = canonicalFingerprint(tc.Name, tc.Arguments)
 	}
-	sort.Strings(names)
-	joined := strings.Join(names, ",")
+	sort.Strings(fingerprints)
+	joined := strings.Join(fingerprints, ",")
 	h := sha256.Sum256([]byte(joined))
 	return hex.EncodeToString(h[:8]) // 前 8 字节足够区分
 }

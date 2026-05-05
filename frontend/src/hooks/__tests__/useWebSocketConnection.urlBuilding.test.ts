@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook, cleanup } from '@testing-library/react'
+import { renderHook, cleanup, waitFor } from '@testing-library/react'
 import { useWebSocketConnection } from '../useWebSocketConnection'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -104,31 +104,31 @@ describe('useWebSocketConnection URL 拼接（R1）', () => {
     expect(expectedKey).toBe('session_id')
   })
 
-  it('场景 1: 无 query 的 url → ?<key>=<value>', () => {
+  it('场景 1: 无 query 的 url → ?<key>=<value>', async () => {
     renderHook(() =>
       useWebSocketConnection({ url: 'ws://h/api', sessionId: 'abc-123', enabled: true })
     )
-    expect(capturedCalls.length).toBe(1)
+    await waitFor(() => expect(capturedCalls.length).toBe(1))
     const captured = new URL(capturedCalls[0].url)
     expect(captured.searchParams.get(expectedKey)).toBe('abc-123')
     // 补充字面正则锁定以防重复 key / 多余字段
     expect(capturedCalls[0].url).toMatch(new RegExp(`^ws:\\/\\/h\\/api\\?${expectedKey}=abc-123$`))
   })
 
-  it('场景 2: 带 query 的 url → 用 & 追加', () => {
+  it('场景 2: 带 query 的 url → 用 & 追加', async () => {
     renderHook(() =>
       useWebSocketConnection({ url: 'ws://h/api?foo=1', sessionId: 'abc-123', enabled: true })
     )
-    expect(capturedCalls.length).toBe(1)
+    await waitFor(() => expect(capturedCalls.length).toBe(1))
     expect(capturedCalls[0].url).toMatch(new RegExp(`\\?foo=1&${expectedKey}=abc-123$`))
   })
 
-  it('场景 3: 特殊字符值必须 URL-encoded（可 decodeURIComponent 反解）', () => {
+  it('场景 3: 特殊字符值必须 URL-encoded（可 decodeURIComponent 反解）', async () => {
     const original = 'abc/+&='
     renderHook(() =>
       useWebSocketConnection({ url: 'ws://h/api', sessionId: original, enabled: true })
     )
-    expect(capturedCalls.length).toBe(1)
+    await waitFor(() => expect(capturedCalls.length).toBe(1))
     const parsed = new URL(capturedCalls[0].url)
     const gotValue = parsed.searchParams.get(expectedKey)
     expect(gotValue).toBe(original)
@@ -138,11 +138,11 @@ describe('useWebSocketConnection URL 拼接（R1）', () => {
     expect(decodeURIComponent(rawAfterKey)).toBe(original)
   })
 
-  it('场景 4: sessionId undefined → url 不含 key', () => {
+  it('场景 4: sessionId undefined → url 不含 key', async () => {
     renderHook(() =>
       useWebSocketConnection({ url: 'ws://h/api', sessionId: undefined, enabled: true })
     )
-    expect(capturedCalls.length).toBe(1)
+    await waitFor(() => expect(capturedCalls.length).toBe(1))
     expect(capturedCalls[0].url).not.toContain(`${expectedKey}=`)
     expect(capturedCalls[0].url).toBe('ws://h/api')
   })

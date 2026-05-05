@@ -92,6 +92,49 @@ function appendMessage(messages: Message[], msg: Message): Message[] {
   return msgs;
 }
 
+function findCurrentUserMessageIndex(messages: Message[], tempId: string, content: string): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role === 'user' && msg.timestamp === tempId) {
+      return i;
+    }
+  }
+  // 用户消息可能已被 WebSocket confirmUserMessage 替换成真实 timestamp。
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role === 'user' && msg.content === content) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function hasFinalAssistantAfterUser(messages: Message[], userIndex: number): boolean {
+  if (userIndex < 0) return false;
+  return messages.slice(userIndex + 1).some((msg) => {
+    const ts = msg.timestamp || '';
+    return msg.role === 'assistant'
+      && !msg.is_error
+      && !ts.startsWith('stream-')
+      && msg.content.trim().length > 0;
+  });
+}
+
+function removeStreamingAssistantAfterUser(messages: Message[], userIndex: number, streamId: string | null): Message[] {
+  if (userIndex < 0) return messages;
+  const streamIndex = messages.findIndex((msg, index) => {
+    if (index <= userIndex || msg.role !== 'assistant') return false;
+    const ts = msg.timestamp || '';
+    if (streamId) return ts === streamId;
+    return ts.startsWith('stream-');
+  });
+  if (streamIndex < 0) return messages;
+  return [
+    ...messages.slice(0, streamIndex),
+    ...messages.slice(streamIndex + 1),
+  ];
+}
+
 export const useChatStore = create<ChatState>((set) => ({
   messages: [],
   sending: false,
@@ -123,9 +166,33 @@ export const useChatStore = create<ChatState>((set) => ({
     }));
 
     try {
-      // 注意：响应通过 WebSocket 流式接收，不在此处添加
-      await client.sendMessage(sessionId, content, options);
-      set({ sending: false });
+      const resp = await client.sendMessage(sessionId, content, options);
+      // WebSocket 是优先通道；HTTP 响应是兜底，避免 WS token 过期或缺帧时用户看不到最终回复。
+      set((s) => {
+        if (!resp?.content || !resp.completed) {
+          return { sending: false };
+        }
+        const userIndex = findCurrentUserMessageIndex(s.messages, tempId, content);
+        if (hasFinalAssistantAfterUser(s.messages, userIndex)) {
+          return { sending: false };
+        }
+        const baseMessages = removeStreamingAssistantAfterUser(s.messages, userIndex, s.streamingMessageId);
+        const anchor = maxConfirmedTimestamp(s.messages);
+        const fallbackTs = anchor
+          ? new Date(new Date(anchor).getTime() + 1).toISOString()
+          : rfc3339Now();
+        return {
+          messages: appendMessage(baseMessages, {
+            role: 'assistant',
+            content: resp.content,
+            timestamp: fallbackTs,
+          }),
+          sending: false,
+          streaming: false,
+          streamingMessageId: null,
+          agentStatus: null,
+        };
+      });
     } catch (e: unknown) {
       const errorMsg = e instanceof Error ? e.message : '发送消息失败';
       // 网络错误（fetch 网络故障 / 客户端超时）→ 保留红色错误条

@@ -69,6 +69,78 @@ func TestReadFile(t *testing.T) {
 	}
 }
 
+func TestReadFile_WorkspaceRootSlashPath(t *testing.T) {
+	origAllowAll := allowAllPaths
+	origWorkDir := os.Getenv("TOOLS_WORK_DIR")
+	allowAllPaths = false
+	root := t.TempDir()
+	t.Setenv("TOOLS_WORK_DIR", root)
+	t.Cleanup(func() {
+		allowAllPaths = origAllowAll
+		if origWorkDir == "" {
+			os.Unsetenv("TOOLS_WORK_DIR")
+		} else {
+			os.Setenv("TOOLS_WORK_DIR", origWorkDir)
+		}
+	})
+
+	path := filepath.Join(root, "README.md")
+	if err := os.WriteFile(path, []byte("workspace readme"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	host := newTestHost(t)
+	allowAllPaths = false
+	input, _ := json.Marshal(map[string]string{"path": "/README.md"})
+	result, err := host.ExecuteTool(context.Background(), "read_file", input)
+	if err != nil {
+		t.Fatalf("ExecuteTool: %v", err)
+	}
+	if result.IsError {
+		var msg string
+		_ = json.Unmarshal(result.Content, &msg)
+		t.Fatalf("unexpected error: %s", msg)
+	}
+
+	var content string
+	_ = json.Unmarshal(result.Content, &content)
+	if !strings.Contains(content, "workspace readme") {
+		t.Fatalf("expected workspace readme, got %q", content)
+	}
+}
+
+func TestReadFile_SystemAbsolutePathStillRejected(t *testing.T) {
+	origAllowAll := allowAllPaths
+	origWorkDir := os.Getenv("TOOLS_WORK_DIR")
+	allowAllPaths = false
+	root := t.TempDir()
+	t.Setenv("TOOLS_WORK_DIR", root)
+	t.Cleanup(func() {
+		allowAllPaths = origAllowAll
+		if origWorkDir == "" {
+			os.Unsetenv("TOOLS_WORK_DIR")
+		} else {
+			os.Setenv("TOOLS_WORK_DIR", origWorkDir)
+		}
+	})
+
+	host := newTestHost(t)
+	allowAllPaths = false
+	input, _ := json.Marshal(map[string]string{"path": "/etc/passwd"})
+	result, err := host.ExecuteTool(context.Background(), "read_file", input)
+	if err != nil {
+		t.Fatalf("ExecuteTool: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected /etc/passwd to remain rejected")
+	}
+	var msg string
+	_ = json.Unmarshal(result.Content, &msg)
+	if !strings.Contains(msg, "超出允许的工作目录") {
+		t.Fatalf("expected workspace rejection, got %q", msg)
+	}
+}
+
 func TestWriteFile(t *testing.T) {
 	host := newTestHost(t)
 

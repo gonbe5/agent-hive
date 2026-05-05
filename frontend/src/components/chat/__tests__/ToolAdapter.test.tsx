@@ -10,13 +10,21 @@ const storeState = vi.hoisted(() => ({
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string) => {
+    t: (key: string, options?: Record<string, unknown>) => {
       const map: Record<string, string> = {
         'tools.invoked': 'Invoked',
         'tools.clickToExpand': 'Click to expand',
         'tools.clickToCollapse': 'Click to collapse',
         'tools.output': 'Output',
         'tools.input': 'Input',
+        'todos.inlineUpdated': 'Todos updated',
+        'todos.title': 'Todos',
+        'todos.taskCount': `${options?.count ?? 0} tasks`,
+        'todos.status.pending': 'Pending',
+        'todos.status.in_progress': 'In progress',
+        'todos.status.completed': 'Completed',
+        'todos.status.cancelled': 'Cancelled',
+        'todos.planStatus.planning': 'Planning',
       };
       return map[key] ?? key;
     },
@@ -91,5 +99,58 @@ describe('ToolAdapter status mapping', () => {
     expect(screen.getByText('Error')).toBeTruthy();
     const root = document.querySelector('[data-slot="collapsible"]');
     expect(root?.getAttribute('data-state')).toBe('open');
+  });
+
+  it('todo_write / success: 渲染业务待办列表而不是通用 Completed 工具状态', () => {
+    storeState.toolCallStatuses = { 'tc-todo': { status: 'success' } };
+    const result = JSON.stringify({
+      session_id: 's-1',
+      plan_status: 'planning',
+      plan_version: 2,
+      todos: [
+        {
+          id: 't1',
+          content: 'Locate and read README',
+          status: 'pending',
+          order: 0,
+          version: 2,
+          created_at: '2026-05-04T03:37:49.910202Z',
+          updated_at: '2026-05-04T03:37:49.910202Z',
+        },
+        {
+          id: 't2',
+          content: 'Enumerate docs directory',
+          status: 'pending',
+          order: 1,
+          version: 2,
+          created_at: '2026-05-04T03:37:49.910202Z',
+          updated_at: '2026-05-04T03:37:49.910202Z',
+        },
+      ],
+      updated_at: '2026-05-04T03:37:49.910202Z',
+    });
+
+    const { container } = render(
+      <ToolAdapter
+        id="tc-todo"
+        name="todo_write"
+        args='{"expected_plan_version":1}'
+        result={result}
+        hasError={false}
+      />,
+    );
+
+    expect(screen.getByText('Todos updated')).toBeTruthy();
+    expect(screen.getByText(/Planning/)).toBeTruthy();
+    expect(screen.getByText('2 tasks')).toBeTruthy();
+    expect(screen.getByText('Locate and read README')).toBeTruthy();
+    expect(screen.getByText('Enumerate docs directory')).toBeTruthy();
+    expect(screen.getAllByText('Pending').length).toBe(2);
+    expect(screen.queryByText('Output')).toBeNull();
+    expect(screen.queryByText('Completed')).toBeNull();
+    const list = container.querySelector('[data-testid="inline-todos-list"]');
+    expect(list).toBeTruthy();
+    expect(list?.className).not.toContain('rounded-xl');
+    expect(list?.className).not.toContain('border');
   });
 });

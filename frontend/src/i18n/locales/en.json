@@ -142,6 +142,8 @@
   "todos": {
     "title": "Todos",
     "ariaLabel": "Session todos",
+    "inlineUpdated": "Todos updated",
+    "taskCount": "{{count}} tasks",
     "pausedHint": "Send a message to continue",
     "resume": "Resume",
     "resumeRunning": "Resuming",

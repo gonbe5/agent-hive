@@ -33,6 +33,26 @@ interface AuthState {
 
 // refresh 锁：防止并发 refresh
 let refreshPromise: Promise<string | null> | null = null;
+const DEFAULT_REFRESH_SKEW_MS = 60_000;
+
+function decodeJWTPayload(token: string): { exp?: number } | null {
+  const parts = token.split('.');
+  if (parts.length < 2) return null;
+  try {
+    const normalized = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+    return JSON.parse(atob(padded)) as { exp?: number };
+  } catch {
+    return null;
+  }
+}
+
+export function shouldRefreshToken(token: string | null, skewMs = DEFAULT_REFRESH_SKEW_MS): boolean {
+  if (!token) return false;
+  const payload = decodeJWTPayload(token);
+  if (!payload?.exp) return true;
+  return payload.exp * 1000 <= Date.now() + skewMs;
+}
 
 export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
@@ -137,4 +157,13 @@ export async function refreshToken(): Promise<string | null> {
     }
   })();
   return refreshPromise;
+}
+
+export async function ensureFreshToken(options: { force?: boolean; skewMs?: number } = {}): Promise<string | null> {
+  const token = localStorage.getItem('auth_token');
+  if (!token) return null;
+  if (!options.force && !shouldRefreshToken(token, options.skewMs ?? DEFAULT_REFRESH_SKEW_MS)) {
+    return token;
+  }
+  return refreshToken();
 }

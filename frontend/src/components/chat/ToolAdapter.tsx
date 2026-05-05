@@ -4,6 +4,7 @@ import { useChatStore } from '../../store/chat';
 import { getToolDisplayName } from '../../utils/toolName';
 import { ToolInvocationChip } from './ToolInvocationChip';
 import { ToolExecutionBlock } from './ToolExecutionBlock';
+import { isTodoWriteTool, parseTodoToolSnapshot, TodoToolResultCard } from './TodoToolResultCard';
 
 type HiveStatus = 'running' | 'success' | 'error';
 type AiToolState =
@@ -50,6 +51,10 @@ export function ToolAdapter({ id, name, args, result, hasError }: ToolAdapterPro
   const aiState = HIVE_TO_AI[resolvedStatus];
   const isRunning = resolvedStatus === 'running';
   const displayName = getToolDisplayName(name, t);
+
+  if (!hasError && resolvedStatus === 'success' && isTodoWriteTool(name) && parseTodoToolSnapshot(result)) {
+    return <TodoToolResultCard result={result} />;
+  }
 
   return (
     <Tool defaultOpen={resolvedStatus !== 'success'}>

@@ -54,12 +54,12 @@
   },
   "key_files": [
     {
-      "path": "/go.mod",
+      "path": "go.mod",
       "purpose": "Go 模块定义和依赖管理",
       "importance": "high"
     },
     {
-      "path": "/cmd/main.go",
+      "path": "cmd/main.go",
       "purpose": "程序入口",
       "importance": "high"
     }

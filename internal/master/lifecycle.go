@@ -50,6 +50,69 @@ func extractShellCommand(input json.RawMessage) (string, bool) {
 	return payload.Command, true
 }
 
+func structuredInputField(input json.RawMessage, names ...string) string {
+	if len(input) == 0 {
+		return ""
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(input, &payload); err != nil {
+		return ""
+	}
+	for _, name := range names {
+		raw, ok := payload[name]
+		if !ok {
+			continue
+		}
+		var value string
+		if err := json.Unmarshal(raw, &value); err == nil {
+			return strings.ToLower(strings.TrimSpace(value))
+		}
+	}
+	return ""
+}
+
+func stringIn(value string, candidates ...string) bool {
+	for _, candidate := range candidates {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func isStructuredDangerousOperation(toolName string, input json.RawMessage) bool {
+	action := structuredInputField(input, "action", "operation")
+	switch toolName {
+	case "send_im_message", "remove_tool":
+		return true
+	case "create_tool":
+		// create_tool 内部已有业务审批桥，但这里保留兜底：若配置关闭内部审批，权限层仍会拦。
+		return true
+	case "memory", "taskboard":
+		return action == "delete"
+	case "feishu_api":
+		return stringIn(action,
+			"send_message", "send_image", "send_file",
+			"create_approval",
+			"create_bitable_record", "update_bitable_record",
+			"create_task", "complete_task",
+			"write_sheet",
+		)
+	case "wechat_send_rich_message":
+		return true
+	case "wechat_contacts":
+		return stringIn(action, "add", "accept", "delete")
+	case "wechat_groups":
+		return stringIn(action, "create", "invite", "remove", "set_name", "set_announcement", "quit")
+	case "wechat_profile":
+		return stringIn(action, "set_nickname", "set_signature", "remark")
+	case "wechat_moments":
+		return stringIn(action, "post", "like", "comment")
+	default:
+		return false
+	}
+}
+
 // Start 初始化并启动所有已注册的 sub-agents
 func (m *Master) Start(ctx context.Context) {
 	m.registry.StartAll(ctx)
@@ -212,10 +275,31 @@ func (m *Master) createPermissionPromptFn() func(context.Context, skills.Permiss
 		sessionID := toolctx.GetSessionID(ctx)
 		strictMode := m.config.SecurityPermissionMode == "strict"
 
-		// 非 shell 家族工具：Input 是结构化 JSON（如 {theme_id, title}），不是 shell 文本，
-		// 没有 MatchPolicy 的语义；在非 strict 模式直接放行。strict 模式走 legacy HITL。
+		// 非 shell 家族工具：Input 是结构化 JSON，按工具自己的 action/operation 做细分。
+		// minimal 模式只拦外部发送、删除、工具变更等危险副作用；普通文件编辑/计划/读取直接放行。
 		if !m.isShellFamilyTool(req.ToolName) {
 			if !strictMode {
+				if isStructuredDangerousOperation(req.ToolName, req.Input) {
+					m.emitQualityEvent("", "", sessionID, agentquality.Event{
+						Name:        agentquality.EventPermissionDecision,
+						Route:       routeFromSessionID(sessionID),
+						FailureType: agentquality.FailurePermission,
+						FinalStatus: agentquality.StatusNeedsUser,
+						Attributes: map[string]any{
+							"tool_name": req.ToolName,
+							"policy":    "structured_ask",
+						},
+					})
+					m.enqueueMetric(observability.Metric{
+						Name:  "security.structured_dangerous_operation_ask_total",
+						Value: 1,
+						Labels: map[string]any{
+							"tool_name": req.ToolName,
+							"route":     routeFromSessionID(sessionID),
+						},
+					})
+					return m.requestHITLPermission(ctx, req, sessionID)
+				}
 				return skills.PermissionResponse{Granted: true}, nil
 			}
 			// strict 模式：非 shell 工具也走审批（一键回滚路径）

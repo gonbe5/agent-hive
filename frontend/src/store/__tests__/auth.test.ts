@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { useAuthStore, refreshToken } from '../auth';
+import { ensureFreshToken, refreshToken, shouldRefreshToken, useAuthStore } from '../auth';
 import { apiClient } from '../../api/client';
 
 // mock apiClient
@@ -12,6 +12,14 @@ vi.mock('../../api/client', () => ({
 
 const mockGet = vi.mocked(apiClient.get);
 const mockPost = vi.mocked(apiClient.post);
+
+function tokenWithExp(expSeconds: number): string {
+  const payload = btoa(JSON.stringify({ exp: expSeconds }))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+  return `header.${payload}.signature`;
+}
 
 beforeEach(() => {
   // 重置 store 状态
@@ -166,5 +174,49 @@ describe('refreshToken', () => {
 
     expect(token).toBeNull();
     expect(useAuthStore.getState().token).toBeNull();
+  });
+});
+
+describe('ensureFreshToken', () => {
+  it('token 仍有足够有效期 → 不刷新，直接返回原 token', async () => {
+    const token = tokenWithExp(Math.floor(Date.now() / 1000) + 3600);
+    localStorage.setItem('auth_token', token);
+    useAuthStore.setState({ token });
+
+    const got = await ensureFreshToken();
+
+    expect(got).toBe(token);
+    expect(mockPost).not.toHaveBeenCalled();
+  });
+
+  it('token 已过期 → 静默刷新并返回新 token', async () => {
+    const token = tokenWithExp(Math.floor(Date.now() / 1000) - 10);
+    localStorage.setItem('auth_token', token);
+    useAuthStore.setState({ token });
+    mockPost.mockResolvedValueOnce({ token: 'new-token' });
+
+    const got = await ensureFreshToken();
+
+    expect(got).toBe('new-token');
+    expect(mockPost).toHaveBeenCalledWith('/api/v1/auth/refresh');
+    expect(localStorage.getItem('auth_token')).toBe('new-token');
+  });
+
+  it('token 即将过期 → 判定需要提前刷新', () => {
+    const token = tokenWithExp(Math.floor(Date.now() / 1000) + 20);
+
+    expect(shouldRefreshToken(token, 60_000)).toBe(true);
+  });
+
+  it('force=true → 即使 token 未过期也刷新', async () => {
+    const token = tokenWithExp(Math.floor(Date.now() / 1000) + 3600);
+    localStorage.setItem('auth_token', token);
+    useAuthStore.setState({ token });
+    mockPost.mockResolvedValueOnce({ token: 'forced-token' });
+
+    const got = await ensureFreshToken({ force: true });
+
+    expect(got).toBe('forced-token');
+    expect(mockPost).toHaveBeenCalledWith('/api/v1/auth/refresh');
   });
 });

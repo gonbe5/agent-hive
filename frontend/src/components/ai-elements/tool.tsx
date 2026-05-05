@@ -25,7 +25,10 @@ export type ToolProps = ComponentProps<typeof Collapsible>;
 
 export const Tool = ({ className, ...props }: ToolProps) => (
   <Collapsible
-    className={cn("group not-prose mb-4 w-full rounded-md border", className)}
+    className={cn(
+      "group not-prose mb-4 w-full rounded-md border border-[var(--border-color)] bg-[var(--bg-card)]",
+      className
+    )}
     {...props}
   />
 );
@@ -61,11 +64,18 @@ const statusIcons: Record<ToolPart["state"], ReactNode> = {
   "input-streaming": <CircleIcon className="size-4" />,
   "output-available": <CheckCircleIcon className="size-4 text-green-600" />,
   "output-denied": <XCircleIcon className="size-4 text-orange-600" />,
-  "output-error": <XCircleIcon className="size-4 text-red-600" />,
+  "output-error": <XCircleIcon className="size-4 text-white" />,
+};
+
+const statusBadgeClasses: Partial<Record<ToolPart["state"], string>> = {
+  "output-error": "bg-[var(--danger)] text-white",
 };
 
 const getStatusBadge = (status: ToolPart["state"]) => (
-  <Badge className="gap-1.5 rounded-full text-xs" variant="secondary">
+  <Badge
+    className={cn("gap-1.5 rounded-full text-xs", statusBadgeClasses[status])}
+    variant="secondary"
+  >
     {statusIcons[status]}
     {statusLabels[status]}
   </Badge>

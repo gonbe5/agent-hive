@@ -418,10 +418,11 @@ func registerReadFile(host *mcphost.Host, logger *zap.Logger, tracker *ReadTrack
 				return errorResult("输入无效: " + err.Error()), nil
 			}
 
-			// 路径安全校验：防止路径穿越攻击
-			if err := validatePath(params.Path); err != nil {
+			resolvedPath, err := resolveToolPath(params.Path)
+			if err != nil {
 				return errorResult(err.Error()), nil
 			}
+			params.Path = resolvedPath
 
 			// 检查文件是否存在并获取文件信息
 			fileInfo, err := os.Stat(params.Path)
@@ -586,10 +587,11 @@ func registerWriteFile(host *mcphost.Host, logger *zap.Logger, tracker *ReadTrac
 				return errorResult("输入无效: " + err.Error()), nil
 			}
 
-			// 路径安全校验：防止路径穿越攻击
-			if err := validatePath(params.Path); err != nil {
+			resolvedPath, err := resolveToolPath(params.Path)
+			if err != nil {
 				return errorResult(err.Error()), nil
 			}
+			params.Path = resolvedPath
 
 			// 获取文件锁，序列化对同一文件的并发写入
 			unlock := globalFileLock.Lock(params.Path)
@@ -678,10 +680,11 @@ func registerGlob(host *mcphost.Host, logger *zap.Logger) {
 				baseDir = "."
 			}
 
-			// 路径安全校验：对搜索基础目录做穿越攻击检查
-			if err := validatePath(baseDir); err != nil {
+			resolvedBaseDir, err := resolveToolPath(baseDir)
+			if err != nil {
 				return errorResult(err.Error()), nil
 			}
+			baseDir = resolvedBaseDir
 
 			if globalGlobEngine == nil {
 				return errorResult("搜索引擎未初始化"), nil
@@ -750,10 +753,11 @@ func registerGrep(host *mcphost.Host, logger *zap.Logger) {
 				searchPath = "."
 			}
 
-			// 路径安全校验：对搜索目标路径做穿越攻击检查
-			if err := validatePath(searchPath); err != nil {
+			resolvedSearchPath, err := resolveToolPath(searchPath)
+			if err != nil {
 				return errorResult(err.Error()), nil
 			}
+			searchPath = resolvedSearchPath
 
 			if globalGrepEngine == nil {
 				return errorResult("搜索引擎未初始化"), nil
@@ -926,10 +930,11 @@ func registerEdit(host *mcphost.Host, logger *zap.Logger, tracker *ReadTracker) 
 				return errorResult("输入无效: " + err.Error()), nil
 			}
 
-			// ⚠️ E-S5 安全修复：路径穿越防护（路径穿越防护在文件锁之前）
-			if err := validatePath(params.Path); err != nil {
+			resolvedPath, err := resolveToolPath(params.Path)
+			if err != nil {
 				return errorResult(err.Error()), nil
 			}
+			params.Path = resolvedPath
 
 			// 获取文件锁，序列化对同一文件的并发编辑
 			unlock := globalFileLock.Lock(params.Path)
@@ -1138,6 +1143,75 @@ func validatePath(p string) error {
 	}
 
 	return nil
+}
+
+// resolveToolPath 将工具输入路径解析到当前工作目录内。
+// 兼容模型把仓库根相对路径误写成 "/README.md" 的情况：
+// - 对于工作区内文件，"/foo/bar" 会被解释为 "<workdir>/foo/bar"
+// - 对于真实系统绝对路径（如 /etc/passwd），仍然拒绝
+func resolveToolPath(p string) (string, error) {
+	if allowAllPaths {
+		if p == "" {
+			return "", fmt.Errorf("路径不能为空")
+		}
+		return p, nil
+	}
+
+	if p == "" {
+		return "", fmt.Errorf("路径不能为空")
+	}
+
+	allowedRoot := os.Getenv("TOOLS_WORK_DIR")
+	if allowedRoot == "" {
+		var err error
+		allowedRoot, err = os.Getwd()
+		if err != nil {
+			return "", nil
+		}
+	}
+	if resolved, err := filepath.EvalSymlinks(allowedRoot); err == nil {
+		allowedRoot = resolved
+	}
+	allowedRoot = filepath.Clean(allowedRoot)
+
+	candidate := filepath.Clean(p)
+	if filepath.IsAbs(candidate) {
+		if candidate == string(filepath.Separator) || candidate == filepath.VolumeName(candidate)+string(filepath.Separator) {
+			return "", fmt.Errorf("路径安全校验失败：%q 超出允许的工作目录 %q", p, allowedRoot)
+		}
+
+		trimmed := strings.TrimPrefix(candidate, string(filepath.Separator))
+		workspaceRelative := filepath.Clean(filepath.Join(allowedRoot, trimmed))
+		if !looksLikeSystemAbsolutePath(trimmed) && (workspaceRelative == allowedRoot || strings.HasPrefix(workspaceRelative, allowedRoot+string(filepath.Separator))) && workspacePathExists(workspaceRelative) {
+			return workspaceRelative, nil
+		}
+
+		if err := validatePath(candidate); err != nil {
+			return "", err
+		}
+		return candidate, nil
+	}
+
+	return filepath.Clean(filepath.Join(allowedRoot, candidate)), nil
+}
+
+func looksLikeSystemAbsolutePath(path string) bool {
+	first, _, _ := strings.Cut(filepath.ToSlash(path), "/")
+	switch first {
+	case "Applications", "Library", "Network", "System", "Users", "Volumes",
+		"bin", "boot", "dev", "etc", "home", "lib", "lib64", "opt",
+		"private", "proc", "root", "run", "sbin", "sys", "tmp", "usr", "var":
+		return true
+	default:
+		return false
+	}
+}
+
+func workspacePathExists(path string) bool {
+	if _, err := os.Lstat(path); err == nil {
+		return true
+	}
+	return false
 }
 
 func textResult(text string) *mcphost.ToolResult {

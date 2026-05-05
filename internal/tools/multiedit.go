@@ -79,17 +79,20 @@ func registerMultiEdit(host *mcphost.Host, logger *zap.Logger, tracker *ReadTrac
 			}
 
 			// 路径安全校验
-			for _, e := range params.Edits {
-				if err := validatePath(e.Path); err != nil {
+			resolvedPaths := make([]string, len(params.Edits))
+			for i, e := range params.Edits {
+				resolvedPath, err := resolveToolPath(e.Path)
+				if err != nil {
 					return errorResult(err.Error()), nil
 				}
+				resolvedPaths[i] = resolvedPath
 			}
 
 			// 转换为内部操作结构
 			operations := make([]editOperation, 0, len(params.Edits))
-			for _, e := range params.Edits {
+			for i, e := range params.Edits {
 				operations = append(operations, editOperation{
-					path:       e.Path,
+					path:       resolvedPaths[i],
 					oldString:  e.OldString,
 					newString:  e.NewString,
 					replaceAll: e.ReplaceAll,

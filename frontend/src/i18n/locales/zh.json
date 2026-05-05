@@ -142,6 +142,8 @@
   "todos": {
     "title": "待办",
     "ariaLabel": "会话待办",
+    "inlineUpdated": "待办已更新",
+    "taskCount": "{{count}} 项任务",
     "pausedHint": "发送一条消息以继续",
     "resume": "继续",
     "resumeRunning": "继续中",

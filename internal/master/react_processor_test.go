@@ -38,14 +38,42 @@ func TestLoopDetector_HardStopAt5(t *testing.T) {
 	assert.Equal(t, "hard_stop", d.check(calls)) // 5 → hard_stop
 }
 
+func TestLoopDetector_DifferentArgsDoNotAccumulate(t *testing.T) {
+	d := newLoopDetector(20)
+
+	for i := 0; i < 5; i++ {
+		result := d.check([]llm.ToolCall{{
+			Name:      "read_file",
+			Arguments: []byte(`{"file_path":"docs/file` + string(rune('A'+i)) + `.md"}`),
+		}})
+		assert.Equal(t, "ok", result)
+	}
+}
+
+func TestLoopDetector_IntermittentSameCallsDoNotHardStop(t *testing.T) {
+	d := newLoopDetector(20)
+	target := []llm.ToolCall{{Name: "grep", Arguments: []byte(`{"pattern":"TODO"}`)}}
+	other := []llm.ToolCall{{Name: "read_file", Arguments: []byte(`{"file_path":"README.md"}`)}}
+
+	assert.Equal(t, "ok", d.check(target))
+	assert.Equal(t, "ok", d.check(other))
+	assert.Equal(t, "ok", d.check(target))
+	assert.Equal(t, "ok", d.check(other))
+	assert.Equal(t, "ok", d.check(target))
+	assert.Equal(t, "ok", d.check(other))
+	assert.Equal(t, "ok", d.check(target))
+	assert.Equal(t, "ok", d.check(other))
+	assert.Equal(t, "ok", d.check(target))
+}
+
 func TestLoopDetector_HashSortedNames(t *testing.T) {
 	// 不同顺序的相同工具名应产生相同 hash
 	d := newLoopDetector(20)
 	callsAB := []llm.ToolCall{{Name: "read_file"}, {Name: "bash"}}
 	callsBA := []llm.ToolCall{{Name: "bash"}, {Name: "read_file"}}
 
-	assert.Equal(t, "ok", d.check(callsAB)) // 1
-	assert.Equal(t, "ok", d.check(callsBA)) // 2（同 hash）
+	assert.Equal(t, "ok", d.check(callsAB))   // 1
+	assert.Equal(t, "ok", d.check(callsBA))   // 2（同 hash）
 	assert.Equal(t, "warn", d.check(callsAB)) // 3 → warn（同 hash 第 3 次）
 }
 

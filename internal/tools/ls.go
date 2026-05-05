@@ -74,10 +74,11 @@ func registerLS(host *mcphost.Host, logger *zap.Logger) {
 				params.Path = "."
 			}
 
-			// ⚠️ E-S5 安全修复：路径穿越防护
-			if err := validatePath(params.Path); err != nil {
+			resolvedPath, err := resolveToolPath(params.Path)
+			if err != nil {
 				return errorResult(err.Error()), nil
 			}
+			params.Path = resolvedPath
 
 			// 限制递归深度
 			maxDepth := params.MaxDepth

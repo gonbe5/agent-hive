@@ -38,6 +38,76 @@ func callPermissionFn(t *testing.T, m *Master, sessionID, toolName string, input
 	})
 }
 
+// callCheckPermission 走真实 PermissionManager 入口，覆盖默认权限规则是否会短路 promptFn。
+func callCheckPermission(t *testing.T, m *Master, sessionID, toolName string, input json.RawMessage) error {
+	t.Helper()
+	ctx := toolctx.WithSessionID(context.Background(), sessionID)
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	return m.permMgr.CheckPermission(ctx, toolName, input)
+}
+
+func mustJSON(t *testing.T, v any) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal json: %v", err)
+	}
+	return b
+}
+
+func setupDefaultPermissionMaster(t *testing.T) (*Master, context.CancelFunc) {
+	t.Helper()
+	return setupHITLMaster(t, config.HITLConfig{
+		Enabled:         true,
+		PermissionRules: config.DefaultPermissionRules,
+	})
+}
+
+func approveNextPermissionRequest(t *testing.T, m *Master, ch <-chan BroadcastMessage, wantSessionID, wantToolName string) {
+	t.Helper()
+	select {
+	case msg := <-ch:
+		if msg.Type != EventTypeInputRequest {
+			t.Fatalf("want input_request, got %q", msg.Type)
+		}
+		inputReq, ok := msg.Payload.(*InputRequest)
+		if !ok {
+			t.Fatalf("payload not *InputRequest, got %T", msg.Payload)
+		}
+		if inputReq.Type != InputPermission {
+			t.Fatalf("want InputPermission, got %q", inputReq.Type)
+		}
+		if inputReq.SessionID != wantSessionID {
+			t.Fatalf("want SessionID %q, got %q", wantSessionID, inputReq.SessionID)
+		}
+		if inputReq.ToolName != wantToolName {
+			t.Fatalf("want ToolName %q, got %q", wantToolName, inputReq.ToolName)
+		}
+		if err := m.SubmitInput(InputResponse{
+			RequestID: inputReq.ID,
+			TaskID:    inputReq.TaskID,
+			Action:    "approve",
+		}); err != nil {
+			t.Fatalf("SubmitInput: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("%s 未在 500ms 内广播权限审批请求", wantToolName)
+	}
+}
+
+func assertNoPermissionBroadcast(t *testing.T, ch <-chan BroadcastMessage, toolName string) {
+	t.Helper()
+	select {
+	case msg := <-ch:
+		if msg.Type == EventTypeInputRequest {
+			t.Fatalf("%s 不应触发权限审批广播，got: %+v", toolName, msg)
+		}
+	case <-time.After(100 * time.Millisecond):
+		// 预期路径：无广播
+	}
+}
+
 // TestPermissionFn_IM_PolicyAllow 路径 (a)：IM session + PolicyAllow 命令 → Granted:true，无 HITL。
 func TestPermissionFn_IM_PolicyAllow(t *testing.T) {
 	m, cancel := setupHITLMaster(t, config.HITLConfig{Enabled: true})
@@ -299,6 +369,237 @@ func TestPermissionFn_ShellInputMalformed(t *testing.T) {
 	}
 	if resp2.Granted {
 		t.Error("空 command 必须 safe-deny")
+	}
+}
+
+func TestPermissionManager_MinimalFriction_WriteFileDoesNotAsk(t *testing.T) {
+	m, cancel := setupDefaultPermissionMaster(t)
+	defer cancel()
+	defer m.Stop()
+
+	subID, ch := m.SubscribeWSBroadcast()
+	defer m.UnsubscribeWSBroadcast(subID)
+
+	err := callCheckPermission(t, m, "web-session-write", "write_file", mustJSON(t, map[string]any{
+		"file_path": "docs/example.md",
+		"content":   "hello",
+	}))
+	if err != nil {
+		t.Fatalf("write_file minimal 模式应直接放行: %v", err)
+	}
+	assertNoPermissionBroadcast(t, ch, "write_file")
+}
+
+func TestPermissionManager_MinimalFriction_TodoWriteDoesNotAsk(t *testing.T) {
+	m, cancel := setupDefaultPermissionMaster(t)
+	defer cancel()
+	defer m.Stop()
+
+	subID, ch := m.SubscribeWSBroadcast()
+	defer m.UnsubscribeWSBroadcast(subID)
+
+	err := callCheckPermission(t, m, "web-session-todos", "todo_write", mustJSON(t, map[string]any{
+		"todos": []map[string]any{
+			{"id": "t1", "content": "梳理计划", "status": "pending"},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("todo_write minimal 模式应直接放行: %v", err)
+	}
+	assertNoPermissionBroadcast(t, ch, "todo_write")
+}
+
+func TestPermissionManager_StructuredDanger_SendIMMessageAsks(t *testing.T) {
+	m, cancel := setupDefaultPermissionMaster(t)
+	defer cancel()
+	defer m.Stop()
+
+	subID, ch := m.SubscribeWSBroadcast()
+	defer m.UnsubscribeWSBroadcast(subID)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- callCheckPermission(t, m, "im-user-send", "send_im_message", mustJSON(t, map[string]any{
+			"platform": "feishu",
+			"chat_id":  "oc_xxx",
+			"content":  "hello",
+		}))
+	}()
+
+	approveNextPermissionRequest(t, m, ch, "im-user-send", "send_im_message")
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("send_im_message approve 后应放行: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("send_im_message 权限函数未在审批后返回")
+	}
+}
+
+func TestPermissionManager_StructuredDanger_MemoryDeleteAsksButSearchAllows(t *testing.T) {
+	m, cancel := setupDefaultPermissionMaster(t)
+	defer cancel()
+	defer m.Stop()
+
+	subID, ch := m.SubscribeWSBroadcast()
+	defer m.UnsubscribeWSBroadcast(subID)
+
+	searchErr := callCheckPermission(t, m, "web-session-memory", "memory", mustJSON(t, map[string]any{
+		"operation": "search",
+		"query":     "用户偏好",
+	}))
+	if searchErr != nil {
+		t.Fatalf("memory.search 应直接放行: %v", searchErr)
+	}
+	assertNoPermissionBroadcast(t, ch, "memory.search")
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- callCheckPermission(t, m, "web-session-memory", "memory", mustJSON(t, map[string]any{
+			"operation": "delete",
+			"id":        42,
+		}))
+	}()
+
+	approveNextPermissionRequest(t, m, ch, "web-session-memory", "memory")
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("memory.delete approve 后应放行: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("memory.delete 权限函数未在审批后返回")
+	}
+}
+
+func TestPermissionManager_StructuredDanger_FeishuReadAllowsButSendAsks(t *testing.T) {
+	m, cancel := setupDefaultPermissionMaster(t)
+	defer cancel()
+	defer m.Stop()
+
+	subID, ch := m.SubscribeWSBroadcast()
+	defer m.UnsubscribeWSBroadcast(subID)
+
+	readErr := callCheckPermission(t, m, "im-feishu-read", "feishu_api", mustJSON(t, map[string]any{
+		"action": "get_doc_content",
+	}))
+	if readErr != nil {
+		t.Fatalf("feishu_api 只读 action 应直接放行: %v", readErr)
+	}
+	assertNoPermissionBroadcast(t, ch, "feishu_api.get_doc_content")
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- callCheckPermission(t, m, "im-feishu-send", "feishu_api", mustJSON(t, map[string]any{
+			"action":  "send_message",
+			"chat_id": "oc_xxx",
+			"content": "hello",
+		}))
+	}()
+
+	approveNextPermissionRequest(t, m, ch, "im-feishu-send", "feishu_api")
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("feishu_api.send_message approve 后应放行: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("feishu_api.send_message 权限函数未在审批后返回")
+	}
+}
+
+func TestPermissionManager_StructuredDanger_WechatReadAllowsButMutationAsks(t *testing.T) {
+	m, cancel := setupDefaultPermissionMaster(t)
+	defer cancel()
+	defer m.Stop()
+
+	subID, ch := m.SubscribeWSBroadcast()
+	defer m.UnsubscribeWSBroadcast(subID)
+
+	listErr := callCheckPermission(t, m, "im-wechat-read", "wechat_contacts", mustJSON(t, map[string]any{
+		"action": "list",
+	}))
+	if listErr != nil {
+		t.Fatalf("wechat_contacts.list 应直接放行: %v", listErr)
+	}
+	assertNoPermissionBroadcast(t, ch, "wechat_contacts.list")
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- callCheckPermission(t, m, "im-wechat-delete", "wechat_contacts", mustJSON(t, map[string]any{
+			"action": "delete",
+			"wxid":   "wxid_xxx",
+		}))
+	}()
+
+	approveNextPermissionRequest(t, m, ch, "im-wechat-delete", "wechat_contacts")
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("wechat_contacts.delete approve 后应放行: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("wechat_contacts.delete 权限函数未在审批后返回")
+	}
+}
+
+func TestPermissionManager_StructuredDanger_TaskboardDeleteAsksButListAllows(t *testing.T) {
+	m, cancel := setupDefaultPermissionMaster(t)
+	defer cancel()
+	defer m.Stop()
+
+	subID, ch := m.SubscribeWSBroadcast()
+	defer m.UnsubscribeWSBroadcast(subID)
+
+	listErr := callCheckPermission(t, m, "web-taskboard", "taskboard", mustJSON(t, map[string]any{
+		"operation": "list",
+	}))
+	if listErr != nil {
+		t.Fatalf("taskboard.list 应直接放行: %v", listErr)
+	}
+	assertNoPermissionBroadcast(t, ch, "taskboard.list")
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- callCheckPermission(t, m, "web-taskboard", "taskboard", mustJSON(t, map[string]any{
+			"operation": "delete",
+			"id":        "task-1",
+		}))
+	}()
+
+	approveNextPermissionRequest(t, m, ch, "web-taskboard", "taskboard")
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("taskboard.delete approve 后应放行: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("taskboard.delete 权限函数未在审批后返回")
+	}
+}
+
+func TestPermissionManager_ShellPolicyAskStillAsks(t *testing.T) {
+	m, cancel := setupDefaultPermissionMaster(t)
+	defer cancel()
+	defer m.Stop()
+
+	subID, ch := m.SubscribeWSBroadcast()
+	defer m.UnsubscribeWSBroadcast(subID)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- callCheckPermission(t, m, "web-shell-ask", "bash", buildBashInput(t, "rm -rf /tmp/foo"))
+	}()
+
+	approveNextPermissionRequest(t, m, ch, "web-shell-ask", "bash")
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("PolicyAsk shell approve 后应放行: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("PolicyAsk shell 权限函数未在审批后返回")
 	}
 }
 
