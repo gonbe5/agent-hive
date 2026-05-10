@@ -206,6 +206,9 @@ func TestHandleChannelPushSchedules_CRUDLifecycle(t *testing.T) {
 	if createRec.Code != http.StatusCreated {
 		t.Fatalf("create status = %d, want 201, body=%s", createRec.Code, createRec.Body.String())
 	}
+	if createRec.Header().Get("Deprecation") != "true" {
+		t.Fatalf("create Deprecation header = %q, want true", createRec.Header().Get("Deprecation"))
+	}
 
 	var created map[string]any
 	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
@@ -225,6 +228,9 @@ func TestHandleChannelPushSchedules_CRUDLifecycle(t *testing.T) {
 
 	if listRec.Code != http.StatusOK {
 		t.Fatalf("list status = %d, want 200, body=%s", listRec.Code, listRec.Body.String())
+	}
+	if listRec.Header().Get("Deprecation") != "true" {
+		t.Fatalf("list Deprecation header = %q, want true", listRec.Header().Get("Deprecation"))
 	}
 
 	var listed []map[string]any
@@ -251,6 +257,9 @@ func TestHandleChannelPushSchedules_CRUDLifecycle(t *testing.T) {
 
 	if deleteRec.Code != http.StatusNoContent {
 		t.Fatalf("delete status = %d, want 204, body=%s", deleteRec.Code, deleteRec.Body.String())
+	}
+	if deleteRec.Header().Get("Deprecation") != "true" {
+		t.Fatalf("delete Deprecation header = %q, want true", deleteRec.Header().Get("Deprecation"))
 	}
 
 	listAfterDeleteReq := httptest.NewRequest(http.MethodGet, "/api/v1/channels/push/schedules", nil)

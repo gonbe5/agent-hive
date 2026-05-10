@@ -18,6 +18,7 @@ const Agents = lazy(() => import('./pages/Agents').then(({ Agents }) => ({ defau
 const Skills = lazy(() => import('./pages/Skills').then(({ Skills }) => ({ default: Skills })));
 const Guide = lazy(() => import('./pages/Guide').then(({ Guide }) => ({ default: Guide })));
 const AdminSettings = lazy(() => import('./pages/AdminSettings').then(({ AdminSettings }) => ({ default: AdminSettings })));
+const ScheduledTasks = lazy(() => import('./pages/ScheduledTasks').then(({ ScheduledTasks }) => ({ default: ScheduledTasks })));
 const UserList = lazy(() => import('./pages/admin/UserList').then(({ UserList }) => ({ default: UserList })));
 const UsageStats = lazy(() => import('./pages/admin/UsageStats').then(({ UsageStats }) => ({ default: UsageStats })));
 const AuthProviders = lazy(() => import('./pages/admin/AuthProviders').then(({ AuthProviders }) => ({ default: AuthProviders })));
@@ -86,6 +87,7 @@ export default function App() {
               <Route element={<AdminShell />}>
                 <Route path="/admin" element={<Dashboard />} />
                 <Route path="/admin/agents" element={<Agents />} />
+                <Route path="/admin/scheduled-tasks" element={<ScheduledTasks />} />
                 <Route path="/admin/skills" element={<AdminGuard><Skills /></AdminGuard>} />
                 <Route path="/admin/settings" element={<AdminGuard><AdminSettings /></AdminGuard>} />
                 <Route path="/admin/guide" element={<Guide />} />

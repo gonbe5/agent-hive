@@ -3,18 +3,17 @@ package bootstrap
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/chef-guo/agents-hive/internal/channel"
 	"github.com/chef-guo/agents-hive/internal/channel/dingtalk"
 	"github.com/chef-guo/agents-hive/internal/channel/feishu"
-	wchat "github.com/chef-guo/agents-hive/internal/channel/wechat"
-	"github.com/chef-guo/agents-hive/internal/channel/wechat/wechatpadpro"
-	"github.com/chef-guo/agents-hive/internal/channel/wechat/wechaty"
 	"github.com/chef-guo/agents-hive/internal/channel/wecom"
 	"github.com/chef-guo/agents-hive/internal/config"
 	"github.com/chef-guo/agents-hive/internal/master"
@@ -151,8 +150,7 @@ func MigrateConfigToDB(db store.Store, cfg *config.Config, logger *zap.Logger) {
 		{"dingtalk", cfg.Channel.DingTalk.Enabled, cfg.Channel.DingTalk},
 		{"feishu", cfg.Channel.Feishu.Enabled, cfg.Channel.Feishu},
 		{"wecom", cfg.Channel.WeCom.Enabled, cfg.Channel.WeCom},
-		{"wechat-wechaty", cfg.Channel.WeChat.Wechaty.Enabled, cfg.Channel.WeChat.Wechaty},
-		{"wechat-wechatpadpro", cfg.Channel.WeChat.WeChatPadPro.Enabled, cfg.Channel.WeChat.WeChatPadPro},
+		{"wechatbot", cfg.Channel.WeChatBot.Enabled, cfg.Channel.WeChatBot},
 	}
 	for _, m := range channelMappings {
 		data, err := json.Marshal(m.cfg)
@@ -232,17 +230,11 @@ func LoadChannelConfigsFromDB(db store.Store, cfg *config.Config, logger *zap.Lo
 				cfg.Channel.WeCom = wcCfg
 				logger.Info("从数据库加载企业微信配置")
 			}
-		case "wechat-wechaty":
-			var wchatCfg config.WechatyInstanceConfig
-			if err := json.Unmarshal([]byte(rec.ConfigJSON), &wchatCfg); err == nil {
-				cfg.Channel.WeChat.Wechaty = wchatCfg
-				logger.Info("从数据库加载 Wechaty 配置")
-			}
-		case "wechat-wechatpadpro":
-			var padproCfg config.WeChatPadProInstanceConfig
-			if err := json.Unmarshal([]byte(rec.ConfigJSON), &padproCfg); err == nil {
-				cfg.Channel.WeChat.WeChatPadPro = padproCfg
-				logger.Info("从数据库加载 WeChatPadPro 配置")
+		case "wechatbot":
+			var wbCfg config.WeChatBotConfig
+			if err := json.Unmarshal([]byte(rec.ConfigJSON), &wbCfg); err == nil {
+				cfg.Channel.WeChatBot = wbCfg
+				logger.Info("从数据库加载官方 wechatbot 配置")
 			}
 		}
 	}
@@ -323,6 +315,187 @@ func restoreFeishuPushSchedules(ctx context.Context, m *master.Master, db store.
 		}
 	}
 	return nil
+}
+
+func restoreScheduledTasksAsync(ctx context.Context, m *master.Master, db store.Store, logger *zap.Logger) {
+	if m == nil || db == nil {
+		return
+	}
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	m.StopCron("scheduled-task:poller")
+	err := m.CronCreate(master.CronJob{
+		ID:       "scheduled-task-poller",
+		Name:     "scheduled-task:poller",
+		Interval: 30 * time.Second,
+		Callback: func(runCtx context.Context) error {
+			return runDueScheduledTasks(runCtx, m, db, logger)
+		},
+	})
+	if err != nil {
+		logger.Warn("恢复 Agent 定时任务扫描器失败", zap.Error(err))
+		m.RecordScheduledTaskMetric("scheduled_task.reload_total", map[string]any{"result": "failed"})
+		return
+	}
+	m.RecordScheduledTaskMetric("scheduled_task.reload_total", map[string]any{"result": "ok"})
+	validateScheduledTaskReloadsAsync(ctx, m, db, logger)
+	logger.Info("Agent 定时任务扫描器已恢复")
+	restoreScheduledTaskHistoryGCAsync(ctx, m, db, logger)
+}
+
+func validateScheduledTaskReloadsAsync(ctx context.Context, m *master.Master, db store.Store, logger *zap.Logger) {
+	go func() {
+		validateScheduledTaskReloads(ctx, m, db, logger)
+	}()
+}
+
+func validateScheduledTaskReloads(ctx context.Context, m *master.Master, db store.Store, logger *zap.Logger) {
+	tasks, err := db.ListEnabledScheduledTasks(ctx)
+	if err != nil {
+		logger.Warn("读取 Agent 定时任务恢复列表失败", zap.Error(err))
+		m.RecordScheduledTaskMetric("scheduled_task.reload_total", map[string]any{"result": "failed"})
+		return
+	}
+	failures := make(map[string]string)
+	for _, task := range tasks {
+		if task == nil {
+			continue
+		}
+		spec := master.ScheduleSpec{
+			Interval: time.Duration(task.IntervalSec) * time.Second,
+			CronExpr: task.CronExpr,
+			Timezone: task.Timezone,
+		}
+		if err := master.ValidateScheduleSpec(spec, master.ScheduledTaskAdminMinInterval); err != nil {
+			failures[task.ID] = "定时任务恢复失败: " + err.Error()
+			m.RecordScheduledTaskMetric("scheduled_task.reload_total", map[string]any{"result": "failed"})
+			continue
+		}
+		if _, err := master.NextScheduledRun(spec, time.Now().UTC()); err != nil {
+			failures[task.ID] = "定时任务恢复失败: " + err.Error()
+			m.RecordScheduledTaskMetric("scheduled_task.reload_total", map[string]any{"result": "failed"})
+			continue
+		}
+		m.RecordScheduledTaskMetric("scheduled_task.reload_total", map[string]any{"result": "ok"})
+	}
+	if err := db.BulkMarkScheduledTaskReloadFailures(ctx, failures); err != nil {
+		logger.Warn("标记 Agent 定时任务恢复失败状态失败", zap.Error(err))
+		m.RecordScheduledTaskMetric("scheduled_task.reload_total", map[string]any{"result": "failed"})
+		return
+	}
+	for taskID, msg := range failures {
+		logger.Warn("Agent 定时任务恢复失败,已停用", zap.String("task_id", taskID), zap.String("error", msg))
+	}
+}
+
+func restoreScheduledTaskHistoryGCAsync(ctx context.Context, m *master.Master, db store.Store, logger *zap.Logger) {
+	if m == nil || db == nil {
+		return
+	}
+	m.StopCron("scheduled-task:history-gc")
+	maintain := func(runCtx context.Context) error {
+		if err := db.MaintainScheduledTaskRunPartitions(runCtx, time.Now().UTC(), 4); err != nil {
+			m.RecordScheduledTaskMetric("scheduled_task.partition_ensure_total", map[string]any{"result": "failed"})
+			return err
+		}
+		m.RecordScheduledTaskMetric("scheduled_task.partition_ensure_total", map[string]any{"result": "ok"})
+		return nil
+	}
+	go func() {
+		if err := maintain(ctx); err != nil {
+			logger.Warn("维护 Agent 定时任务 run 分区失败", zap.Error(err))
+		}
+	}()
+	err := m.CronCreate(master.CronJob{
+		ID:   "scheduled-task-history-gc",
+		Name: "scheduled-task:history-gc",
+		Schedule: master.ScheduleSpec{
+			CronExpr: "0 3 * * 1",
+			Timezone: "UTC",
+		},
+		Callback: maintain,
+	})
+	if err != nil {
+		logger.Warn("恢复 Agent 定时任务历史分区维护失败", zap.Error(err))
+		m.RecordScheduledTaskMetric("scheduled_task.reload_total", map[string]any{"result": "failed"})
+		return
+	}
+	m.RecordScheduledTaskMetric("scheduled_task.reload_total", map[string]any{"result": "ok"})
+}
+
+func runDueScheduledTasks(ctx context.Context, m *master.Master, db store.Store, logger *zap.Logger) error {
+	tasks, err := db.ListEnabledScheduledTasks(ctx)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	for _, task := range tasks {
+		if task == nil || task.NextRunAt == nil || task.NextRunAt.After(now) {
+			continue
+		}
+		nextRunAt, err := master.NextScheduledRun(master.ScheduleSpec{
+			Interval: time.Duration(task.IntervalSec) * time.Second,
+			CronExpr: task.CronExpr,
+			Timezone: task.Timezone,
+		}, now)
+		if err != nil {
+			logger.Warn("计算 Agent 定时任务下一次运行时间失败", zap.String("task_id", task.ID), zap.Error(err))
+			continue
+		}
+		runID := newScheduleRunID()
+		run, err := db.ClaimDueScheduledTaskRun(ctx, task.ID, now, runID, now.Add(35*time.Minute), nextRunAt, "master")
+		if err != nil {
+			if !errors.Is(err, store.ErrNotFound) {
+				m.RecordScheduledTaskMetric("scheduled_task.claim_total", map[string]any{"result": "error", "target_type": task.TargetType})
+				logger.Warn("claim Agent 定时任务失败", zap.String("task_id", task.ID), zap.Error(err))
+			} else {
+				m.RecordScheduledTaskMetric("scheduled_task.claim_total", map[string]any{"result": "skipped", "target_type": task.TargetType})
+				logger.Debug("scheduled task claim skipped", zap.String("task_id", task.ID), zap.String("reason", "not_due_or_already_claimed"), zap.String("run_id", runID))
+			}
+			continue
+		}
+		m.RecordScheduledTaskMetric("scheduled_task.claim_total", map[string]any{"result": "claimed", "target_type": task.TargetType})
+		go executeScheduledTaskRun(context.Background(), m, db, *task, run, logger)
+	}
+	return nil
+}
+
+func executeScheduledTaskRun(ctx context.Context, m *master.Master, db store.Store, task store.ScheduledTask, run *store.ScheduledTaskRun, logger *zap.Logger) {
+	if run == nil {
+		return
+	}
+	execCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+
+	sessionID, output, attempts, err := m.DispatchScheduledTaskWithRetry(execCtx, task, run.ID)
+	finishedAt := time.Now().UTC()
+	run.FinishedAt = &finishedAt
+	run.SessionID = sessionID
+	run.Output = output
+	run.AttemptCount += attempts
+	if err != nil {
+		if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
+			run.Status = "timeout"
+			run.Error = "scheduled task timed out after 30m"
+		} else {
+			run.Status = "failed"
+			run.Error = err.Error()
+		}
+	} else {
+		run.Status = "succeeded"
+		run.Error = ""
+	}
+	if finishErr := db.FinishScheduledTaskRun(context.Background(), run); finishErr != nil {
+		logger.Warn("完成 Agent 定时任务 run 失败", zap.String("task_id", run.TaskID), zap.String("run_id", run.ID), zap.Error(finishErr))
+		return
+	}
+	m.RecordScheduledTaskMetric("scheduled_task.run_total", map[string]any{"status": run.Status, "target_type": task.TargetType})
+	logger.Info("Agent 定时任务 run 已完成", zap.String("task_id", run.TaskID), zap.String("run_id", run.ID), zap.String("status", run.Status))
+}
+
+func newScheduleRunID() string {
+	return "run-" + uuid.NewString()
 }
 
 // BuildReloadChannelFunc 构建 IM 通道热重载回调
@@ -597,65 +770,6 @@ func BuildReloadMCPFunc(
 		logger.Info("MCP 服务端已热重载",
 			zap.String("name", serverName),
 			zap.String("transport", serverCfg.Transport))
-		return nil
-	}
-}
-
-// BuildReloadProtocolFunc 构建微信协议热重载回调
-func BuildReloadProtocolFunc(
-	cfg *config.Config,
-	router *channel.Router,
-	ctx context.Context,
-	logger *zap.Logger,
-) func(string) error {
-	if router == nil {
-		return nil
-	}
-	return func(protocol string) error {
-		platform := channel.Platform("wechat-" + protocol)
-
-		// 1. 停止旧实例
-		if err := router.UnregisterPlugin(platform); err != nil {
-			logger.Warn("注销旧插件失败，继续执行热重载",
-				zap.String("protocol", protocol),
-				zap.Error(err))
-		}
-
-		// 2. 根据协议创建新实例
-		switch protocol {
-		case "wechaty":
-			if !cfg.Channel.WeChat.Wechaty.Enabled {
-				logger.Info("协议已禁用，仅停止旧实例",
-					zap.String("protocol", protocol))
-				return nil
-			}
-			proto := wechaty.New(cfg.Channel.WeChat.Wechaty, logger)
-			p := wchat.New("wechaty", proto, router, logger)
-			router.RegisterPlugin(p)
-			if err := p.Start(ctx); err != nil {
-				return err
-			}
-			logger.Info("Wechaty 协议已热重载")
-
-		case "wechatpadpro":
-			if !cfg.Channel.WeChat.WeChatPadPro.Enabled {
-				logger.Info("协议已禁用，仅停止旧实例",
-					zap.String("protocol", protocol))
-				return nil
-			}
-			proto := wechatpadpro.New(cfg.Channel.WeChat.WeChatPadPro, logger)
-			p := wchat.New("wechatpadpro", proto, router, logger)
-			router.RegisterPlugin(p)
-			if err := p.Start(ctx); err != nil {
-				return err
-			}
-			logger.Info("WeChatPadPro 协议已热重载",
-				zap.String("base_url", cfg.Channel.WeChat.WeChatPadPro.BaseURL))
-
-		default:
-			return fmt.Errorf("不支持的协议: %s", protocol)
-		}
-
 		return nil
 	}
 }

@@ -39,6 +39,7 @@ export function Header({ connected, onToggleSidebar }: Props) {
     '/guide': t('nav.guide'),
     '/admin': t('nav.adminDashboard'),
     '/admin/agents': t('nav.adminAgents'),
+    '/admin/scheduled-tasks': t('nav.adminScheduledTasks'),
     '/admin/skills': t('nav.adminSkills'),
     '/admin/settings': t('nav.adminSettings'),
     '/admin/guide': t('nav.guide'),

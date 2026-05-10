@@ -20,6 +20,14 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/channels/push/schedules", s.handleCreatePushSchedule)
 	mux.HandleFunc("GET /api/v1/channels/push/schedules", s.handleListPushSchedules)
 	mux.HandleFunc("DELETE /api/v1/channels/push/schedules/{id}", s.handleDeletePushSchedule)
+	mux.HandleFunc("POST /api/v1/scheduled-tasks", s.handleCreateScheduledTask)
+	mux.HandleFunc("GET /api/v1/scheduled-tasks", s.handleListScheduledTasks)
+	mux.HandleFunc("GET /api/v1/scheduled-tasks/{id}", s.handleGetScheduledTask)
+	mux.HandleFunc("PUT /api/v1/scheduled-tasks/{id}", s.handleUpdateScheduledTask)
+	mux.HandleFunc("DELETE /api/v1/scheduled-tasks/{id}", s.handleDeleteScheduledTask)
+	mux.HandleFunc("POST /api/v1/scheduled-tasks/{id}/toggle", s.handleToggleScheduledTask)
+	mux.HandleFunc("POST /api/v1/scheduled-tasks/{id}/run-now", s.handleRunScheduledTaskNow)
+	mux.HandleFunc("GET /api/v1/scheduled-tasks/{id}/runs", s.handleListScheduledTaskRuns)
 	mux.HandleFunc("GET /api/v1/auth/status", s.handleAuthStatus)
 	mux.HandleFunc("GET /api/v1/capabilities", s.handleListCapabilities)
 
@@ -61,10 +69,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/tools/invoke", s.handleInvokeTool)
 
 	// Config endpoints
-	mux.HandleFunc("GET /api/v1/config/channels/wechat", s.handleGetWeChatConfig)
-	mux.HandleFunc("PATCH /api/v1/config/channels/wechat/{protocol}", s.handleUpdateWeChatProtocol)
 	mux.HandleFunc("POST /api/v1/config/save", s.handleSaveConfig)
-	mux.HandleFunc("POST /api/v1/config/channels/wechat/{protocol}/reload", s.handleReloadWeChatProtocol)
 	// Phase 5 缺口 13 修复:补飞书热重载入口,触发 unregister + rebuild + ReloadFromConfig 链路。
 	mux.HandleFunc("POST /api/v1/config/channels/feishu/reload", s.handleReloadFeishu)
 
@@ -86,6 +91,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 		adminOnly := auth.AdminOnly
 
 		// 用户管理
+		mux.HandleFunc("GET /api/v1/admin/scheduled-tasks", adminOnly(s.handleAdminListScheduledTasks))
 		mux.HandleFunc("GET /api/v1/admin/users", adminOnly(s.handleListUsers))
 		mux.HandleFunc("GET /api/v1/admin/users/{id}", adminOnly(s.handleGetUser))
 		mux.HandleFunc("PATCH /api/v1/admin/users/{id}", adminOnly(s.handleUpdateUser))

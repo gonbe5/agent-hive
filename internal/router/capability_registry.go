@@ -108,12 +108,6 @@ var builtinToolRules = map[string]BuiltinToolRule{
 	"web_search":                 {Domain: "web", Invocation: InvocationDirectTool, Risk: RiskReadOnly, ReadOnly: true},
 	"webfetch":                   {Domain: "web", Invocation: InvocationDirectTool, Risk: RiskReadOnly, ReadOnly: true},
 	"websearch":                  {Domain: "web", Invocation: InvocationDirectTool, Risk: RiskReadOnly, ReadOnly: true},
-	"wechat_contacts":            {Domain: "messaging", Invocation: InvocationDirectTool, Risk: RiskExternalWrite, SideEffect: true, Capabilities: []Capability{CapabilityExternalSend}},
-	"wechat_groups":              {Domain: "messaging", Invocation: InvocationDirectTool, Risk: RiskExternalWrite, SideEffect: true, Capabilities: []Capability{CapabilityExternalSend}},
-	"wechat_moments":             {Domain: "messaging", Invocation: InvocationDirectTool, Risk: RiskExternalWrite, SideEffect: true, Capabilities: []Capability{CapabilityExternalSend}},
-	"wechat_profile":             {Domain: "messaging", Invocation: InvocationDirectTool, Risk: RiskExternalWrite, SideEffect: true, Capabilities: []Capability{CapabilityExternalSend}},
-	"wechat_send_rich_message":   {Domain: "messaging", Invocation: InvocationDirectTool, Risk: RiskExternalWrite, SideEffect: true, Capabilities: []Capability{CapabilityExternalSend}},
-	"wechat_status":              {Domain: "messaging", Invocation: InvocationDirectTool, Risk: RiskReadOnly, ReadOnly: true},
 	"write_file":                 {Domain: "filesystem", Invocation: InvocationDirectTool, Risk: RiskLocalWrite, SideEffect: true},
 }
 
@@ -136,13 +130,8 @@ var structuredDangerousActions = map[string]map[string]bool{
 		"complete_task":         true,
 		"write_sheet":           true,
 	},
-	"memory":                   {"delete": true},
-	"taskboard":                {"delete": true},
-	"wechat_contacts":          {"add": true, "accept": true, "delete": true},
-	"wechat_groups":            {"create": true, "invite": true, "remove": true, "set_name": true, "set_announcement": true, "quit": true},
-	"wechat_moments":           {"post": true, "like": true, "comment": true},
-	"wechat_profile":           {"set_nickname": true, "set_signature": true, "remark": true},
-	"wechat_send_rich_message": {"*": true},
+	"memory":    {"delete": true},
+	"taskboard": {"delete": true},
 }
 
 var structuredDangerousTools = map[string]bool{
@@ -151,12 +140,7 @@ var structuredDangerousTools = map[string]bool{
 	"send_im_message": true,
 }
 
-var mixedReadWriteTools = map[string]bool{
-	"wechat_contacts": true,
-	"wechat_groups":   true,
-	"wechat_moments":  true,
-	"wechat_profile":  true,
-}
+var mixedReadWriteTools = map[string]bool{}
 
 var systemDelegationAgents = map[string]bool{
 	"codereview":  true,
@@ -219,7 +203,7 @@ var hostToolPolicyProfiles = map[string][]string{
 		"skill", "memory", "batch", "question",
 	},
 	"full":      {"*"},
-	"messaging": {"send_im_message", "feishu_api", "wechat_send_rich_message", "wechat_contacts", "wechat_groups", "wechat_profile", "wechat_moments", "wechat_status", "skill"},
+	"messaging": {"send_im_message", "feishu_api", "skill"},
 	"readonly":  {"read_file", "glob", "grep", "ls", "websearch", "webfetch", "web_search", "web_fetch"},
 	"master":    {"skill", "memory", "question", "taskboard", "task", "spawn_agent", "parallel_dispatch"},
 	"master_direct": {
@@ -227,8 +211,6 @@ var hostToolPolicyProfiles = map[string][]string{
 		"create_tool", "remove_tool",
 		"skill", "memory", "question", "taskboard", "batch",
 		"send_im_message", "feishu_api",
-		"wechat_send_rich_message", "wechat_contacts", "wechat_groups",
-		"wechat_profile", "wechat_moments", "wechat_status",
 	},
 }
 

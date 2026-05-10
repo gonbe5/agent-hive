@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
@@ -143,6 +146,13 @@ func nullableTime(t time.Time) any {
 		return nil
 	}
 	return t
+}
+
+func nullableTimePtr(t *time.Time) any {
+	if t == nil || t.IsZero() {
+		return nil
+	}
+	return *t
 }
 
 // ---------------------------------------------------------------------------
@@ -1111,52 +1121,26 @@ func (s *PostgresStore) ListChannelConfigs(ctx context.Context) ([]*ChannelConfi
 }
 
 func (s *PostgresStore) SaveScheduledPush(ctx context.Context, rec *ScheduledPushRecord) error {
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO scheduled_pushes (id, name, platform, prompt, interval_sec, enabled, created_by, last_run_at, next_run_at, last_error, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
-		ON CONFLICT(id) DO UPDATE SET
-			name=EXCLUDED.name,
-			platform=EXCLUDED.platform,
-			prompt=EXCLUDED.prompt,
-			interval_sec=EXCLUDED.interval_sec,
-			enabled=EXCLUDED.enabled,
-			created_by=EXCLUDED.created_by,
-			last_run_at=EXCLUDED.last_run_at,
-			next_run_at=EXCLUDED.next_run_at,
-			last_error=EXCLUDED.last_error,
-			updated_at=NOW()`,
-		rec.ID, rec.Name, rec.Platform, rec.Prompt, rec.IntervalSec, rec.Enabled, rec.CreatedBy, nullableTime(rec.LastRunAt), nullableTime(rec.NextRunAt), rec.LastError,
-	)
-	if err != nil {
+	task := scheduledPushToTask(rec)
+	if err := s.SaveScheduledTask(ctx, task); err != nil {
 		return errs.Wrap(errs.CodeStoreWriteFailed, "保存定时推送失败", err)
 	}
 	return nil
 }
 
 func (s *PostgresStore) GetScheduledPush(ctx context.Context, id string) (*ScheduledPushRecord, error) {
-	var rec ScheduledPushRecord
-	var lastRunAt, nextRunAt *time.Time
-	err := s.pool.QueryRow(ctx,
-		`SELECT id, name, platform, prompt, interval_sec, enabled, created_by, last_run_at, next_run_at, last_error, created_at, updated_at
-		FROM scheduled_pushes WHERE id = $1`, id,
-	).Scan(&rec.ID, &rec.Name, &rec.Platform, &rec.Prompt, &rec.IntervalSec, &rec.Enabled, &rec.CreatedBy, &lastRunAt, &nextRunAt, &rec.LastError, &rec.CreatedAt, &rec.UpdatedAt)
+	task, err := scanScheduledTask(s.pool.QueryRow(ctx, scheduledTaskSelectSQL+` FROM scheduled_pushes WHERE id = $1 AND target_type = 'im_push'`, id))
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, ErrNotFound
 		}
 		return nil, errs.Wrap(errs.CodeStoreReadFailed, "读取定时推送失败", err)
 	}
-	if lastRunAt != nil {
-		rec.LastRunAt = *lastRunAt
-	}
-	if nextRunAt != nil {
-		rec.NextRunAt = *nextRunAt
-	}
-	return &rec, nil
+	return scheduledTaskToPush(task), nil
 }
 
 func (s *PostgresStore) DeleteScheduledPush(ctx context.Context, id string) error {
-	ct, err := s.pool.Exec(ctx, "DELETE FROM scheduled_pushes WHERE id = $1", id)
+	ct, err := s.pool.Exec(ctx, "DELETE FROM scheduled_pushes WHERE id = $1 AND target_type = 'im_push'", id)
 	if err != nil {
 		return errs.Wrap(errs.CodeStoreWriteFailed, "删除定时推送失败", err)
 	}
@@ -1167,11 +1151,10 @@ func (s *PostgresStore) DeleteScheduledPush(ctx context.Context, id string) erro
 }
 
 func (s *PostgresStore) ListScheduledPushes(ctx context.Context, platform string) ([]*ScheduledPushRecord, error) {
-	query := `SELECT id, name, platform, prompt, interval_sec, enabled, created_by, last_run_at, next_run_at, last_error, created_at, updated_at
-		FROM scheduled_pushes`
+	query := scheduledTaskSelectSQL + ` FROM scheduled_pushes WHERE target_type = 'im_push'`
 	args := []any{}
 	if platform != "" {
-		query += ` WHERE platform = $1`
+		query += ` AND platform = $1`
 		args = append(args, platform)
 	}
 	query += ` ORDER BY created_at ASC, id ASC`
@@ -1184,19 +1167,12 @@ func (s *PostgresStore) ListScheduledPushes(ctx context.Context, platform string
 
 	var records []*ScheduledPushRecord
 	for rows.Next() {
-		var rec ScheduledPushRecord
-		var lastRunAt, nextRunAt *time.Time
-		if err := rows.Scan(&rec.ID, &rec.Name, &rec.Platform, &rec.Prompt, &rec.IntervalSec, &rec.Enabled, &rec.CreatedBy, &lastRunAt, &nextRunAt, &rec.LastError, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+		rec, err := scanScheduledTask(rows)
+		if err != nil {
 			s.logger.Warn("扫描定时推送记录失败", zap.Error(err))
 			continue
 		}
-		if lastRunAt != nil {
-			rec.LastRunAt = *lastRunAt
-		}
-		if nextRunAt != nil {
-			rec.NextRunAt = *nextRunAt
-		}
-		records = append(records, &rec)
+		records = append(records, scheduledTaskToPush(rec))
 	}
 	return records, rows.Err()
 }
@@ -1205,7 +1181,7 @@ func (s *PostgresStore) UpdateScheduledPushRun(ctx context.Context, id string, l
 	ct, err := s.pool.Exec(ctx,
 		`UPDATE scheduled_pushes
 		SET last_run_at = $2, next_run_at = $3, last_error = $4, updated_at = NOW()
-		WHERE id = $1`,
+		WHERE id = $1 AND target_type = 'im_push'`,
 		id, nullableTime(lastRunAt), nullableTime(nextRunAt), lastError,
 	)
 	if err != nil {
@@ -1213,6 +1189,650 @@ func (s *PostgresStore) UpdateScheduledPushRun(ctx context.Context, id string, l
 	}
 	if ct.RowsAffected() == 0 {
 		return ErrNotFound
+	}
+	return nil
+}
+
+const scheduledTaskSelectSQL = `SELECT id, name, description, target_type, target_config, platform, prompt, cron_expr, interval_sec, timezone, enabled, created_by, last_run_at, next_run_at, last_error, active_run_id, lease_expires_at, created_at, updated_at`
+
+func scheduledPushToTask(rec *ScheduledPushRecord) *ScheduledTask {
+	var lastRunAt, nextRunAt *time.Time
+	if !rec.LastRunAt.IsZero() {
+		t := rec.LastRunAt
+		lastRunAt = &t
+	}
+	if !rec.NextRunAt.IsZero() {
+		t := rec.NextRunAt
+		nextRunAt = &t
+	}
+	return &ScheduledTask{
+		ID:           rec.ID,
+		Name:         rec.Name,
+		TargetType:   "im_push",
+		TargetConfig: map[string]any{},
+		Platform:     rec.Platform,
+		Prompt:       rec.Prompt,
+		IntervalSec:  rec.IntervalSec,
+		Timezone:     "UTC",
+		Enabled:      rec.Enabled,
+		CreatedBy:    rec.CreatedBy,
+		LastRunAt:    lastRunAt,
+		NextRunAt:    nextRunAt,
+		LastError:    rec.LastError,
+		CreatedAt:    rec.CreatedAt,
+		UpdatedAt:    rec.UpdatedAt,
+	}
+}
+
+func scheduledTaskToPush(rec *ScheduledTask) *ScheduledPushRecord {
+	out := &ScheduledPushRecord{
+		ID:          rec.ID,
+		Name:        rec.Name,
+		Platform:    rec.Platform,
+		Prompt:      rec.Prompt,
+		IntervalSec: rec.IntervalSec,
+		Enabled:     rec.Enabled,
+		CreatedBy:   rec.CreatedBy,
+		LastError:   rec.LastError,
+		CreatedAt:   rec.CreatedAt,
+		UpdatedAt:   rec.UpdatedAt,
+	}
+	if rec.LastRunAt != nil {
+		out.LastRunAt = *rec.LastRunAt
+	}
+	if rec.NextRunAt != nil {
+		out.NextRunAt = *rec.NextRunAt
+	}
+	return out
+}
+
+type scheduledTaskScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanScheduledTask(row scheduledTaskScanner) (*ScheduledTask, error) {
+	var rec ScheduledTask
+	var targetConfig []byte
+	if err := row.Scan(
+		&rec.ID, &rec.Name, &rec.Description, &rec.TargetType, &targetConfig, &rec.Platform, &rec.Prompt,
+		&rec.CronExpr, &rec.IntervalSec, &rec.Timezone, &rec.Enabled, &rec.CreatedBy, &rec.LastRunAt,
+		&rec.NextRunAt, &rec.LastError, &rec.ActiveRunID, &rec.LeaseExpiresAt, &rec.CreatedAt, &rec.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+	if len(targetConfig) > 0 {
+		if err := json.Unmarshal(targetConfig, &rec.TargetConfig); err != nil {
+			return nil, err
+		}
+	}
+	if rec.TargetConfig == nil {
+		rec.TargetConfig = map[string]any{}
+	}
+	return &rec, nil
+}
+
+func (s *PostgresStore) SaveScheduledTask(ctx context.Context, rec *ScheduledTask) error {
+	targetType := rec.TargetType
+	if targetType == "" {
+		targetType = "im_push"
+	}
+	timezone := rec.Timezone
+	if timezone == "" {
+		timezone = "UTC"
+	}
+	targetConfig := rec.TargetConfig
+	if targetConfig == nil {
+		targetConfig = map[string]any{}
+	}
+	targetConfigJSON, err := json.Marshal(targetConfig)
+	if err != nil {
+		return errs.Wrap(errs.CodeStoreWriteFailed, "序列化定时任务 target_config 失败", err)
+	}
+	_, err = s.pool.Exec(ctx,
+		`INSERT INTO scheduled_pushes (
+			id, name, description, target_type, target_config, platform, prompt, cron_expr, interval_sec, timezone,
+			enabled, created_by, last_run_at, next_run_at, last_error, active_run_id, lease_expires_at, created_at, updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW(), NOW())
+		ON CONFLICT(id) DO UPDATE SET
+			name=EXCLUDED.name,
+			description=EXCLUDED.description,
+			target_type=EXCLUDED.target_type,
+			target_config=EXCLUDED.target_config,
+			platform=EXCLUDED.platform,
+			prompt=EXCLUDED.prompt,
+			cron_expr=EXCLUDED.cron_expr,
+			interval_sec=EXCLUDED.interval_sec,
+			timezone=EXCLUDED.timezone,
+			enabled=EXCLUDED.enabled,
+			created_by=EXCLUDED.created_by,
+			next_run_at=EXCLUDED.next_run_at,
+			updated_at=NOW()`,
+		rec.ID, rec.Name, rec.Description, targetType, string(targetConfigJSON), rec.Platform, rec.Prompt, rec.CronExpr, rec.IntervalSec, timezone,
+		rec.Enabled, rec.CreatedBy, nullableTimePtr(rec.LastRunAt), nullableTimePtr(rec.NextRunAt), rec.LastError, rec.ActiveRunID, rec.LeaseExpiresAt,
+	)
+	if err != nil {
+		return errs.Wrap(errs.CodeStoreWriteFailed, "保存定时任务失败", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) GetScheduledTask(ctx context.Context, id string) (*ScheduledTask, error) {
+	rec, err := scanScheduledTask(s.pool.QueryRow(ctx, scheduledTaskSelectSQL+` FROM scheduled_pushes WHERE id = $1`, id))
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, errs.Wrap(errs.CodeStoreReadFailed, "读取定时任务失败", err)
+	}
+	return rec, nil
+}
+
+func (s *PostgresStore) DeleteScheduledTask(ctx context.Context, id string) error {
+	ct, err := s.pool.Exec(ctx, "DELETE FROM scheduled_pushes WHERE id = $1", id)
+	if err != nil {
+		return errs.Wrap(errs.CodeStoreWriteFailed, "删除定时任务失败", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PostgresStore) ListScheduledTasksByUser(ctx context.Context, createdBy string) ([]*ScheduledTask, error) {
+	return s.listScheduledTasks(ctx, ` WHERE created_by = $1 ORDER BY created_at ASC, id ASC`, createdBy)
+}
+
+func (s *PostgresStore) ListAllScheduledTasks(ctx context.Context) ([]*ScheduledTask, error) {
+	return s.listScheduledTasks(ctx, ` ORDER BY created_at ASC, id ASC`)
+}
+
+func (s *PostgresStore) ListEnabledScheduledTasks(ctx context.Context) ([]*ScheduledTask, error) {
+	return s.listScheduledTasks(ctx, ` WHERE enabled = TRUE ORDER BY next_run_at ASC NULLS LAST, created_at ASC, id ASC`)
+}
+
+func (s *PostgresStore) listScheduledTasks(ctx context.Context, suffix string, args ...any) ([]*ScheduledTask, error) {
+	rows, err := s.pool.Query(ctx, scheduledTaskSelectSQL+` FROM scheduled_pushes`+suffix, args...)
+	if err != nil {
+		return nil, errs.Wrap(errs.CodeStoreReadFailed, "查询定时任务列表失败", err)
+	}
+	defer rows.Close()
+
+	var records []*ScheduledTask
+	for rows.Next() {
+		rec, err := scanScheduledTask(rows)
+		if err != nil {
+			s.logger.Warn("扫描定时任务记录失败", zap.Error(err))
+			continue
+		}
+		records = append(records, rec)
+	}
+	return records, rows.Err()
+}
+
+func (s *PostgresStore) EnsureScheduledTaskRunPartition(ctx context.Context, scheduledAt time.Time) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return errs.Wrap(errs.CodeStoreWriteFailed, "开始创建定时任务 run 分区事务失败", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := ensureScheduledTaskRunPartitionWith(ctx, tx, scheduledAt); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return errs.Wrap(errs.CodeStoreWriteFailed, "提交定时任务 run 分区事务失败", err)
+	}
+	return nil
+}
+
+type scheduledTaskPartitionExecer interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func ensureScheduledTaskRunPartitionWith(ctx context.Context, execer scheduledTaskPartitionExecer, scheduledAt time.Time) error {
+	start := isoWeekStart(scheduledAt.UTC())
+	end := start.AddDate(0, 0, 7)
+	year, week := start.ISOWeek()
+	name := fmt.Sprintf("scheduled_task_runs_%04d_w%02d", year, week)
+	if !scheduledTaskPartitionNameRE.MatchString(name) {
+		return errs.New(errs.CodeStoreWriteFailed, "非法定时任务 run 分区名")
+	}
+
+	var locked bool
+	if err := execer.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(hashtext($1))`, name).Scan(&locked); err != nil {
+		return errs.Wrap(errs.CodeStoreWriteFailed, "获取定时任务 run 分区锁失败", err)
+	}
+	if !locked {
+		if _, err := execer.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, name); err != nil {
+			return errs.Wrap(errs.CodeStoreWriteFailed, "等待定时任务 run 分区锁失败", err)
+		}
+	}
+	createTable := fmt.Sprintf(
+		`CREATE TABLE IF NOT EXISTS %s PARTITION OF scheduled_task_runs FOR VALUES FROM (%s) TO (%s)`,
+		pgx.Identifier{name}.Sanitize(), quoteLiteralTime(start), quoteLiteralTime(end),
+	)
+	if _, err := execer.Exec(ctx, createTable); err != nil {
+		return errs.Wrap(errs.CodeStoreWriteFailed, "创建定时任务 run 分区失败", err)
+	}
+	createIndex := fmt.Sprintf(
+		`CREATE INDEX IF NOT EXISTS %s ON %s(task_id, scheduled_at DESC)`,
+		pgx.Identifier{"idx_" + name + "_task_started"}.Sanitize(), pgx.Identifier{name}.Sanitize(),
+	)
+	if _, err := execer.Exec(ctx, createIndex); err != nil {
+		return errs.Wrap(errs.CodeStoreWriteFailed, "创建定时任务 run 分区索引失败", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) MaintainScheduledTaskRunPartitions(ctx context.Context, now time.Time, retainWeeks int) error {
+	if retainWeeks <= 0 {
+		retainWeeks = 4
+	}
+	if err := s.EnsureScheduledTaskRunPartition(ctx, now); err != nil {
+		return err
+	}
+	if err := s.EnsureScheduledTaskRunPartition(ctx, now.AddDate(0, 0, 7)); err != nil {
+		return err
+	}
+	cutoff := isoWeekStart(now.UTC()).AddDate(0, 0, -7*retainWeeks)
+	rows, err := s.pool.Query(ctx, `
+		SELECT c.relname
+		FROM pg_inherits i
+		JOIN pg_class c ON c.oid = i.inhrelid
+		JOIN pg_class p ON p.oid = i.inhparent
+		WHERE p.relname = 'scheduled_task_runs'`)
+	if err != nil {
+		return errs.Wrap(errs.CodeStoreReadFailed, "查询定时任务 run 分区失败", err)
+	}
+	defer rows.Close()
+
+	var dropNames []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return errs.Wrap(errs.CodeStoreReadFailed, "扫描定时任务 run 分区失败", err)
+		}
+		if partitionStart, ok := scheduledTaskPartitionStart(name); ok && partitionStart.Before(cutoff) {
+			dropNames = append(dropNames, name)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return errs.Wrap(errs.CodeStoreReadFailed, "读取定时任务 run 分区失败", err)
+	}
+	for _, name := range dropNames {
+		query := fmt.Sprintf("DROP TABLE IF EXISTS %s", pgx.Identifier{name}.Sanitize())
+		if _, err := s.pool.Exec(ctx, query); err != nil {
+			return errs.Wrap(errs.CodeStoreWriteFailed, "删除过期定时任务 run 分区失败", err)
+		}
+	}
+	return nil
+}
+
+var scheduledTaskPartitionNameRE = regexp.MustCompile(`^scheduled_task_runs_[0-9]{4}_w[0-9]{2}$`)
+var scheduledTaskPartitionRE = regexp.MustCompile(`^scheduled_task_runs_([0-9]{4})_w([0-9]{2})$`)
+
+func scheduledTaskPartitionStart(name string) (time.Time, bool) {
+	matches := scheduledTaskPartitionRE.FindStringSubmatch(name)
+	if len(matches) != 3 {
+		return time.Time{}, false
+	}
+	year, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return time.Time{}, false
+	}
+	week, err := strconv.Atoi(matches[2])
+	if err != nil || week < 1 || week > 53 {
+		return time.Time{}, false
+	}
+	jan4 := time.Date(year, time.January, 4, 0, 0, 0, 0, time.UTC)
+	start := isoWeekStart(jan4).AddDate(0, 0, (week-1)*7)
+	if y, w := start.ISOWeek(); y != year || w != week {
+		return time.Time{}, false
+	}
+	return start, true
+}
+
+func isoWeekStart(t time.Time) time.Time {
+	utc := t.UTC()
+	day := time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC)
+	weekday := int(day.Weekday())
+	if weekday == 0 {
+		weekday = 7
+	}
+	return day.AddDate(0, 0, 1-weekday)
+}
+
+func quoteLiteralTime(t time.Time) string {
+	return "'" + t.UTC().Format("2006-01-02 15:04:05-07:00") + "'"
+}
+
+func (s *PostgresStore) ClaimDueScheduledTaskRun(ctx context.Context, taskID string, now time.Time, runID string, leaseUntil time.Time, nextRunAt time.Time, claimedBy string) (*ScheduledTaskRun, error) {
+	scheduledAt, err := s.dueScheduledTaskRunAt(ctx, taskID, now)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.EnsureScheduledTaskRunPartition(ctx, scheduledAt); err != nil {
+		return nil, err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, errs.Wrap(errs.CodeStoreWriteFailed, "开始 claim 定时任务事务失败", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := tx.QueryRow(ctx, `
+		SELECT next_run_at
+		FROM scheduled_pushes
+		WHERE id = $1
+		  AND enabled = TRUE
+		  AND next_run_at IS NOT NULL
+		  AND next_run_at <= $2
+		  AND next_run_at = $3
+		  AND (active_run_id = '' OR lease_expires_at IS NULL OR lease_expires_at < $2)
+		FOR UPDATE SKIP LOCKED`,
+		taskID, now.UTC(), scheduledAt,
+	).Scan(&scheduledAt); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, errs.Wrap(errs.CodeStoreWriteFailed, "claim 到期定时任务查询失败", err)
+	}
+	run, err := scanScheduledTaskRun(tx.QueryRow(ctx, `
+		WITH inserted AS (
+			INSERT INTO scheduled_task_runs (
+				scheduled_at, id, task_id, status, attempt_count, claimed_by, claim_expires_at
+			)
+			VALUES ($1, $2, $3, 'running', 0, $6, $4)
+			ON CONFLICT (scheduled_at, task_id) DO NOTHING
+			RETURNING scheduled_at, id, task_id, started_at, finished_at, status, attempt_count, output, error, session_id, claimed_by, claim_expires_at
+		),
+		updated AS (
+			UPDATE scheduled_pushes sp
+			SET active_run_id = inserted.id,
+				lease_expires_at = $4,
+				last_run_at = $1,
+				next_run_at = $5,
+				updated_at = NOW()
+			FROM inserted
+			WHERE sp.id = inserted.task_id
+			RETURNING sp.id
+		)
+		SELECT inserted.scheduled_at, inserted.id, inserted.task_id, inserted.started_at, inserted.finished_at, inserted.status, inserted.attempt_count, inserted.output, inserted.error, inserted.session_id, inserted.claimed_by, inserted.claim_expires_at
+		FROM inserted
+		JOIN updated ON updated.id = inserted.task_id`,
+		scheduledAt, runID, taskID, leaseUntil.UTC(), nullableTime(nextRunAt), claimedBy,
+	))
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, errs.Wrap(errs.CodeStoreWriteFailed, "claim 到期定时任务失败", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, errs.Wrap(errs.CodeStoreWriteFailed, "提交 claim 定时任务事务失败", err)
+	}
+	return run, nil
+}
+
+func (s *PostgresStore) dueScheduledTaskRunAt(ctx context.Context, taskID string, now time.Time) (time.Time, error) {
+	var scheduledAt time.Time
+	if err := s.pool.QueryRow(ctx, `
+		SELECT next_run_at
+		FROM scheduled_pushes
+		WHERE id = $1
+		  AND enabled = TRUE
+		  AND next_run_at IS NOT NULL
+		  AND next_run_at <= $2
+		  AND (active_run_id = '' OR lease_expires_at IS NULL OR lease_expires_at < $2)`,
+		taskID, now.UTC(),
+	).Scan(&scheduledAt); err != nil {
+		if err == pgx.ErrNoRows {
+			return time.Time{}, ErrNotFound
+		}
+		return time.Time{}, errs.Wrap(errs.CodeStoreReadFailed, "查询到期定时任务时间失败", err)
+	}
+	return scheduledAt.UTC(), nil
+}
+
+func (s *PostgresStore) ClaimManualScheduledTaskRun(ctx context.Context, taskID string, now time.Time, runID string, leaseUntil time.Time, claimedBy string) (*ScheduledTaskRun, error) {
+	scheduledAt := now.UTC()
+	if err := s.EnsureScheduledTaskRunPartition(ctx, scheduledAt); err != nil {
+		return nil, err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, errs.Wrap(errs.CodeStoreWriteFailed, "开始手动 claim 定时任务事务失败", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := tx.QueryRow(ctx, `
+		SELECT $2::timestamptz
+		FROM scheduled_pushes
+		WHERE id = $1
+		  AND enabled = TRUE
+		  AND (active_run_id = '' OR lease_expires_at IS NULL OR lease_expires_at < $2)
+		FOR UPDATE SKIP LOCKED`,
+		taskID, scheduledAt,
+	).Scan(&scheduledAt); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, errs.Wrap(errs.CodeStoreWriteFailed, "手动 claim 定时任务查询失败", err)
+	}
+	run, err := scanScheduledTaskRun(tx.QueryRow(ctx, `
+		WITH inserted AS (
+			INSERT INTO scheduled_task_runs (
+				scheduled_at, id, task_id, status, attempt_count, claimed_by, claim_expires_at
+			)
+			VALUES ($1, $2, $3, 'running', 0, $5, $4)
+			ON CONFLICT (scheduled_at, task_id) DO NOTHING
+			RETURNING scheduled_at, id, task_id, started_at, finished_at, status, attempt_count, output, error, session_id, claimed_by, claim_expires_at
+		),
+		updated AS (
+			UPDATE scheduled_pushes sp
+			SET active_run_id = inserted.id,
+				lease_expires_at = $4,
+				last_run_at = $1,
+				updated_at = NOW()
+			FROM inserted
+			WHERE sp.id = inserted.task_id
+			RETURNING sp.id
+		)
+		SELECT inserted.scheduled_at, inserted.id, inserted.task_id, inserted.started_at, inserted.finished_at, inserted.status, inserted.attempt_count, inserted.output, inserted.error, inserted.session_id, inserted.claimed_by, inserted.claim_expires_at
+		FROM inserted
+		JOIN updated ON updated.id = inserted.task_id`,
+		scheduledAt, runID, taskID, leaseUntil.UTC(), claimedBy,
+	))
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, errs.Wrap(errs.CodeStoreWriteFailed, "手动 claim 定时任务失败", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, errs.Wrap(errs.CodeStoreWriteFailed, "提交手动 claim 定时任务事务失败", err)
+	}
+	return run, nil
+}
+
+func scanScheduledTaskRun(row scheduledTaskScanner) (*ScheduledTaskRun, error) {
+	var rec ScheduledTaskRun
+	if err := row.Scan(
+		&rec.ScheduledAt, &rec.ID, &rec.TaskID, &rec.StartedAt, &rec.FinishedAt, &rec.Status,
+		&rec.AttemptCount, &rec.Output, &rec.Error, &rec.SessionID, &rec.ClaimedBy, &rec.ClaimExpiresAt,
+	); err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+func (s *PostgresStore) ListScheduledTaskRuns(ctx context.Context, taskID string, limit int) ([]*ScheduledTaskRun, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT scheduled_at, id, task_id, started_at, finished_at, status, attempt_count, output, error, session_id, claimed_by, claim_expires_at
+		FROM scheduled_task_runs
+		WHERE task_id = $1
+		ORDER BY scheduled_at DESC
+		LIMIT $2`,
+		taskID, limit,
+	)
+	if err != nil {
+		return nil, errs.Wrap(errs.CodeStoreReadFailed, "查询定时任务 run 历史失败", err)
+	}
+	defer rows.Close()
+
+	var records []*ScheduledTaskRun
+	for rows.Next() {
+		rec, err := scanScheduledTaskRun(rows)
+		if err != nil {
+			s.logger.Warn("扫描定时任务 run 记录失败", zap.Error(err))
+			continue
+		}
+		records = append(records, rec)
+	}
+	return records, rows.Err()
+}
+
+func (s *PostgresStore) CountRecentScheduledTaskFailures(ctx context.Context, taskID string, limit int) (int, int, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 5
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT status
+		FROM scheduled_task_runs
+		WHERE task_id = $1
+		  AND status <> 'running'
+		ORDER BY scheduled_at DESC
+		LIMIT $2`,
+		taskID, limit,
+	)
+	if err != nil {
+		return 0, 0, errs.Wrap(errs.CodeStoreReadFailed, "查询定时任务最近失败次数失败", err)
+	}
+	defer rows.Close()
+
+	total := 0
+	failures := 0
+	for rows.Next() {
+		var status string
+		if err := rows.Scan(&status); err != nil {
+			return 0, 0, errs.Wrap(errs.CodeStoreReadFailed, "扫描定时任务最近状态失败", err)
+		}
+		total++
+		if status == "failed" || status == "timeout" {
+			failures++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, 0, errs.Wrap(errs.CodeStoreReadFailed, "读取定时任务最近状态失败", err)
+	}
+	return total, failures, nil
+}
+
+func (s *PostgresStore) BulkMarkScheduledTaskReloadFailures(ctx context.Context, failures map[string]string) error {
+	if len(failures) == 0 {
+		return nil
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return errs.Wrap(errs.CodeStoreWriteFailed, "开始标记定时任务恢复失败事务失败", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	for id, msg := range failures {
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		if msg == "" {
+			msg = "定时任务恢复失败"
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE scheduled_pushes
+			SET enabled = FALSE,
+				last_error = $2,
+				updated_at = NOW()
+			WHERE id = $1`,
+			id, msg,
+		); err != nil {
+			return errs.Wrap(errs.CodeStoreWriteFailed, "标记定时任务恢复失败失败", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return errs.Wrap(errs.CodeStoreWriteFailed, "提交标记定时任务恢复失败事务失败", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) FinishScheduledTaskRun(ctx context.Context, run *ScheduledTaskRun) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return errs.Wrap(errs.CodeStoreWriteFailed, "开始完成定时任务 run 事务失败", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	finishedAt := run.FinishedAt
+	if finishedAt == nil {
+		now := time.Now().UTC()
+		finishedAt = &now
+	}
+	ct, err := tx.Exec(ctx,
+		`UPDATE scheduled_task_runs
+		SET finished_at = $3,
+			status = $4,
+			attempt_count = $5,
+			output = $6,
+			error = $7,
+			session_id = $8
+		WHERE scheduled_at = $1 AND id = $2`,
+		run.ScheduledAt, run.ID, finishedAt, run.Status, run.AttemptCount, run.Output, run.Error, run.SessionID,
+	)
+	if err != nil {
+		return errs.Wrap(errs.CodeStoreWriteFailed, "更新定时任务 run 失败", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	leaseUpdate, err := tx.Exec(ctx,
+		`UPDATE scheduled_pushes
+		SET active_run_id = '',
+			lease_expires_at = NULL,
+			last_error = $3,
+			updated_at = NOW()
+		WHERE id = $1
+		  AND active_run_id = $2`,
+		run.TaskID, run.ID, run.Error,
+	)
+	if err != nil {
+		return errs.Wrap(errs.CodeStoreWriteFailed, "清理定时任务 lease 失败", err)
+	}
+	leaseCleared := leaseUpdate.RowsAffected() > 0
+	if err := tx.Commit(ctx); err != nil {
+		return errs.Wrap(errs.CodeStoreWriteFailed, "提交完成定时任务 run 事务失败", err)
+	}
+	if s.logger != nil {
+		s.logger.Info("scheduled task run finalized",
+			zap.String("task_id", run.TaskID),
+			zap.String("run_id", run.ID),
+			zap.String("status", run.Status),
+			zap.Bool("lease_cleared", leaseCleared),
+		)
+	}
+	if (run.Status == "failed" || run.Status == "timeout") && run.TaskID != "" {
+		total, failures, err := s.CountRecentScheduledTaskFailures(ctx, run.TaskID, 5)
+		if err == nil && total == 5 && failures == 5 {
+			_, _ = s.pool.Exec(ctx,
+				`UPDATE scheduled_pushes
+				SET enabled = FALSE,
+					last_error = $2,
+					updated_at = NOW()
+				WHERE id = $1`,
+				run.TaskID, "最近 5 次执行均失败,已自动停用",
+			)
+		}
 	}
 	return nil
 }

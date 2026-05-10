@@ -67,6 +67,22 @@ type Store interface {
 	ListScheduledPushes(ctx context.Context, platform string) ([]*ScheduledPushRecord, error)
 	UpdateScheduledPushRun(ctx context.Context, id string, lastRunAt, nextRunAt time.Time, lastError string) error
 
+	// Agent 定时任务
+	SaveScheduledTask(ctx context.Context, rec *ScheduledTask) error
+	GetScheduledTask(ctx context.Context, id string) (*ScheduledTask, error)
+	DeleteScheduledTask(ctx context.Context, id string) error
+	ListScheduledTasksByUser(ctx context.Context, createdBy string) ([]*ScheduledTask, error)
+	ListAllScheduledTasks(ctx context.Context) ([]*ScheduledTask, error)
+	ListEnabledScheduledTasks(ctx context.Context) ([]*ScheduledTask, error)
+	ListScheduledTaskRuns(ctx context.Context, taskID string, limit int) ([]*ScheduledTaskRun, error)
+	CountRecentScheduledTaskFailures(ctx context.Context, taskID string, limit int) (int, int, error)
+	BulkMarkScheduledTaskReloadFailures(ctx context.Context, failures map[string]string) error
+	EnsureScheduledTaskRunPartition(ctx context.Context, scheduledAt time.Time) error
+	MaintainScheduledTaskRunPartitions(ctx context.Context, now time.Time, retainWeeks int) error
+	ClaimDueScheduledTaskRun(ctx context.Context, taskID string, now time.Time, runID string, leaseUntil time.Time, nextRunAt time.Time, claimedBy string) (*ScheduledTaskRun, error)
+	ClaimManualScheduledTaskRun(ctx context.Context, taskID string, now time.Time, runID string, leaseUntil time.Time, claimedBy string) (*ScheduledTaskRun, error)
+	FinishScheduledTaskRun(ctx context.Context, run *ScheduledTaskRun) error
+
 	// MCP 服务端配置
 	GetMCPServer(ctx context.Context, name string) (*MCPServerRecord, error)
 	SaveMCPServer(ctx context.Context, rec *MCPServerRecord) error
@@ -114,7 +130,7 @@ type Store interface {
 
 // ChannelConfigRecord IM 通道配置记录
 type ChannelConfigRecord struct {
-	Platform   string    `json:"platform"` // "dingtalk" | "feishu" | "wecom" | "wechat-wechaty" | "wechat-wechatpadpro"
+	Platform   string    `json:"platform"` // "dingtalk" | "feishu" | "wecom" | "wechatbot"
 	Enabled    bool      `json:"enabled"`
 	ConfigJSON string    `json:"config_json"` // JSON 序列化的平台特定配置
 	UpdatedAt  time.Time `json:"updated_at"`
@@ -134,6 +150,45 @@ type ScheduledPushRecord struct {
 	LastError   string    `json:"last_error,omitempty"`
 	CreatedAt   time.Time `json:"created_at,omitempty"`
 	UpdatedAt   time.Time `json:"updated_at,omitempty"`
+}
+
+// ScheduledTask 是 Agent 定时任务。物理表沿用 scheduled_pushes。
+type ScheduledTask struct {
+	ID             string         `json:"id"`
+	Name           string         `json:"name"`
+	Description    string         `json:"description,omitempty"`
+	TargetType     string         `json:"target_type"`
+	TargetConfig   map[string]any `json:"target_config"`
+	Platform       string         `json:"platform,omitempty"`
+	Prompt         string         `json:"prompt"`
+	CronExpr       string         `json:"cron_expr,omitempty"`
+	IntervalSec    int            `json:"interval_sec,omitempty"`
+	Timezone       string         `json:"timezone"`
+	Enabled        bool           `json:"enabled"`
+	CreatedBy      string         `json:"created_by"`
+	LastRunAt      *time.Time     `json:"last_run_at,omitempty"`
+	NextRunAt      *time.Time     `json:"next_run_at,omitempty"`
+	LastError      string         `json:"last_error,omitempty"`
+	ActiveRunID    string         `json:"active_run_id,omitempty"`
+	LeaseExpiresAt *time.Time     `json:"lease_expires_at,omitempty"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
+}
+
+// ScheduledTaskRun 是一次定时任务运行记录。
+type ScheduledTaskRun struct {
+	ScheduledAt    time.Time  `json:"scheduled_at"`
+	ID             string     `json:"id"`
+	TaskID         string     `json:"task_id"`
+	StartedAt      time.Time  `json:"started_at"`
+	FinishedAt     *time.Time `json:"finished_at,omitempty"`
+	Status         string     `json:"status"`
+	AttemptCount   int        `json:"attempt_count"`
+	Output         string     `json:"output"`
+	Error          string     `json:"error"`
+	SessionID      string     `json:"session_id,omitempty"`
+	ClaimedBy      string     `json:"claimed_by,omitempty"`
+	ClaimExpiresAt *time.Time `json:"claim_expires_at,omitempty"`
 }
 
 // LLMProviderRecord LLM 提供商配置记录

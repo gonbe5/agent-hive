@@ -917,28 +917,57 @@ export interface SessionListResponse {
   sessions: Session[];
 }
 
-// 微信配置相关
-export interface WeChatProtocolConfig {
-  [key: string]: unknown;
-}
+export type ScheduledTaskTargetType = 'im_push' | 'session';
+export type ScheduledTaskRunStatus = 'running' | 'succeeded' | 'failed' | 'timeout' | 'skipped';
 
-export interface WeChatProtocolStatus {
+export interface ScheduledTask {
+  id: string;
+  name: string;
+  description?: string;
+  target_type: ScheduledTaskTargetType;
+  target_config: Record<string, unknown>;
+  platform?: string;
+  prompt: string;
+  cron_expr?: string;
+  interval_sec?: number;
+  timezone: string;
   enabled: boolean;
-  status: 'not_started' | 'connected' | 'error';
-  logged_in: boolean;
-  config: WeChatProtocolConfig;
+  created_by: string;
+  last_run_at?: string;
+  next_run_at?: string;
+  last_error?: string;
+  active_run_id?: string;
+  lease_expires_at?: string;
+  created_at: string;
+  updated_at: string;
 }
 
-export interface WeChatConfigResponse {
-  protocols: {
-    wechaty: WeChatProtocolStatus;
-    wechatpadpro: WeChatProtocolStatus;
-  };
+export interface ScheduledTaskRun {
+  scheduled_at: string;
+  id: string;
+  task_id: string;
+  started_at: string;
+  finished_at?: string;
+  status: ScheduledTaskRunStatus;
+  attempt_count: number;
+  output: string;
+  error: string;
+  session_id?: string;
+  claimed_by?: string;
+  claim_expires_at?: string;
 }
 
-export interface UpdateWeChatProtocolRequest {
+export interface ScheduledTaskUpsertRequest {
+  name: string;
+  description?: string;
+  target_type: ScheduledTaskTargetType;
+  target_config?: Record<string, unknown>;
+  platform?: string;
+  prompt: string;
+  interval_sec?: number;
+  cron_expr?: string;
+  timezone?: string;
   enabled: boolean;
-  config: WeChatProtocolConfig;
 }
 
 // Model

@@ -22,6 +22,17 @@ func TestBuildSessionID_Format(t *testing.T) {
 	}
 }
 
+func TestBuildSessionID_WeChatBotUsesOwnerUserIDTenant(t *testing.T) {
+	got, err := imctx.BuildSessionID(imctx.PlatformWeChatBot, "user-abc", "wxid-peer")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "im-wechatbot-user_abc-wxid_peer"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
 func TestBuildSessionID_RejectsEmpty(t *testing.T) {
 	cases := []struct {
 		name              string

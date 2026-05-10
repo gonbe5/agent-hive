@@ -13,14 +13,10 @@ import (
 type Platform string
 
 const (
-	PlatformDingTalk Platform = "dingtalk"
-	PlatformFeishu   Platform = "feishu"
-	PlatformWeCom    Platform = "wecom"
-	PlatformWeChat   Platform = "wechat" // 保留用于向后兼容
-
-	// 微信多协议支持：每个协议有独立的 Platform 标识
-	PlatformWeChatWechaty Platform = "wechat-wechaty"
-	PlatformWeChatPadPro  Platform = "wechat-wechatpadpro"
+	PlatformDingTalk  Platform = "dingtalk"
+	PlatformFeishu    Platform = "feishu"
+	PlatformWeCom     Platform = "wecom"
+	PlatformWeChatBot Platform = "wechatbot"
 )
 
 // ChatType 聊天类型
@@ -101,6 +97,7 @@ type InboundMessage struct {
 	MessageID   string       `json:"message_id"`
 	Platform    Platform     `json:"platform"`
 	TenantKey   string       `json:"tenant_key,omitempty"`
+	OwnerUserID string       `json:"owner_user_id,omitempty"`
 	ChatType    ChatType     `json:"chat_type"`
 	ChatID      string       `json:"chat_id"`
 	SenderID    string       `json:"sender_id"`
@@ -141,17 +138,19 @@ const (
 
 // OutboundMessage 发送到 IM 平台的统一消息结构
 type OutboundMessage struct {
-	Platform  Platform `json:"platform"`
-	TenantKey string   `json:"tenant_key,omitempty"`
-	ChatID    string   `json:"chat_id"`
-	Content   string   `json:"content"`
-	MsgType   MsgType  `json:"msg_type,omitempty"` // 消息格式，默认 text
-	ReplyTo   string   `json:"reply_to,omitempty"`
+	Platform    Platform `json:"platform"`
+	TenantKey   string   `json:"tenant_key,omitempty"`
+	OwnerUserID string   `json:"owner_user_id,omitempty"`
+	ChatID      string   `json:"chat_id"`
+	Content     string   `json:"content"`
+	MsgType     MsgType  `json:"msg_type,omitempty"` // 消息格式，默认 text
+	ReplyTo     string   `json:"reply_to,omitempty"`
 }
 
 // Binding IM 通道与会话的绑定关系
 type Binding struct {
 	Platform  Platform `json:"platform"`
+	TenantKey string   `json:"tenant_key,omitempty"`
 	ChatID    string   `json:"chat_id"`
 	SessionID string   `json:"session_id"`
 }

@@ -80,7 +80,7 @@ func main() {
 			zap.Strings("vars", cfg.Security.WatchEnvVars))
 	}
 
-	// 启动 WeChat 插件
+	// 启动 IM 插件
 	sc.StartChannels(ctx, logger)
 
 	// 启动 Skill Watcher（热重载）
@@ -141,14 +141,6 @@ func main() {
 	}
 	if sc.MemStore != nil {
 		server.SetMemoryStore(sc.MemStore)
-	}
-
-	// 注册微信协议热重载回调
-	if sc.ChannelRouter != nil {
-		reloadFn := bootstrap.BuildReloadProtocolFunc(cfg, sc.ChannelRouter, ctx, logger)
-		if reloadFn != nil {
-			server.SetReloadProtocolFunc(reloadFn)
-		}
 	}
 
 	go func() {

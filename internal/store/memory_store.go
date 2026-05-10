@@ -20,6 +20,8 @@ type MemoryStore struct {
 	llmProviders map[string]*LLMProviderRecord
 	llmModels    map[string]*LLMModelRecord
 	schedules    map[string]*ScheduledPushRecord
+	tasks        map[string]*ScheduledTask
+	taskRuns     map[string]*ScheduledTaskRun
 }
 
 var _ SessionStore = (*MemoryStore)(nil)
@@ -30,6 +32,8 @@ func NewMemoryStore() *MemoryStore {
 		sessions:  make(map[string]*SessionRecord),
 		messages:  make(map[string][]MessageRecord),
 		schedules: make(map[string]*ScheduledPushRecord),
+		tasks:     make(map[string]*ScheduledTask),
+		taskRuns:  make(map[string]*ScheduledTaskRun),
 	}
 }
 
@@ -339,49 +343,44 @@ func (m *MemoryStore) ListChannelConfigs(_ context.Context) ([]*ChannelConfigRec
 	return nil, nil
 }
 func (m *MemoryStore) SaveScheduledPush(_ context.Context, rec *ScheduledPushRecord) error {
+	task := memoryScheduledPushToTask(rec)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.schedules == nil {
-		m.schedules = make(map[string]*ScheduledPushRecord)
-	}
-	cp := *rec
-	now := time.Now().UTC()
-	if cp.CreatedAt.IsZero() {
-		cp.CreatedAt = now
-	}
-	cp.UpdatedAt = now
-	m.schedules[rec.ID] = &cp
+	m.saveScheduledTaskLocked(task)
 	return nil
 }
 func (m *MemoryStore) GetScheduledPush(_ context.Context, id string) (*ScheduledPushRecord, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	rec, ok := m.schedules[id]
-	if !ok {
+	task, ok := m.tasks[id]
+	if !ok || task.TargetType != "im_push" {
 		return nil, ErrNotFound
 	}
-	cp := *rec
-	return &cp, nil
+	return memoryScheduledTaskToPush(task), nil
 }
 func (m *MemoryStore) DeleteScheduledPush(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.schedules[id]; !ok {
+	task, ok := m.tasks[id]
+	if !ok || task.TargetType != "im_push" {
 		return ErrNotFound
 	}
 	delete(m.schedules, id)
+	delete(m.tasks, id)
 	return nil
 }
 func (m *MemoryStore) ListScheduledPushes(_ context.Context, platform string) ([]*ScheduledPushRecord, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]*ScheduledPushRecord, 0, len(m.schedules))
-	for _, rec := range m.schedules {
+	out := make([]*ScheduledPushRecord, 0, len(m.tasks))
+	for _, rec := range m.tasks {
+		if rec.TargetType != "im_push" {
+			continue
+		}
 		if platform != "" && rec.Platform != platform {
 			continue
 		}
-		cp := *rec
-		out = append(out, &cp)
+		out = append(out, memoryScheduledTaskToPush(rec))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
@@ -394,15 +393,384 @@ func (m *MemoryStore) ListScheduledPushes(_ context.Context, platform string) ([
 func (m *MemoryStore) UpdateScheduledPushRun(_ context.Context, id string, lastRunAt, nextRunAt time.Time, lastError string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	rec, ok := m.schedules[id]
+	rec, ok := m.tasks[id]
+	if !ok || rec.TargetType != "im_push" {
+		return ErrNotFound
+	}
+	rec.LastRunAt = &lastRunAt
+	rec.NextRunAt = &nextRunAt
+	rec.LastError = lastError
+	rec.UpdatedAt = time.Now().UTC()
+	m.schedules[id] = memoryScheduledTaskToPush(rec)
+	return nil
+}
+func memoryScheduledPushToTask(rec *ScheduledPushRecord) *ScheduledTask {
+	task := scheduledPushToTask(rec)
+	return task
+}
+func memoryScheduledTaskToPush(rec *ScheduledTask) *ScheduledPushRecord {
+	return scheduledTaskToPush(rec)
+}
+func (m *MemoryStore) SaveScheduledTask(_ context.Context, rec *ScheduledTask) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.saveScheduledTaskLocked(rec)
+	return nil
+}
+func (m *MemoryStore) saveScheduledTaskLocked(rec *ScheduledTask) {
+	if m.tasks == nil {
+		m.tasks = make(map[string]*ScheduledTask)
+	}
+	if m.schedules == nil {
+		m.schedules = make(map[string]*ScheduledPushRecord)
+	}
+	cp := cloneScheduledTask(rec)
+	now := time.Now().UTC()
+	existing := m.tasks[cp.ID]
+	createdAtWasZero := cp.CreatedAt.IsZero()
+	if cp.TargetType == "" {
+		cp.TargetType = "im_push"
+	}
+	if cp.TargetConfig == nil {
+		cp.TargetConfig = map[string]any{}
+	}
+	if cp.Timezone == "" {
+		cp.Timezone = "UTC"
+	}
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = now
+	}
+	if existing != nil {
+		cp.ActiveRunID = existing.ActiveRunID
+		if existing.LeaseExpiresAt != nil {
+			leaseExpiresAt := *existing.LeaseExpiresAt
+			cp.LeaseExpiresAt = &leaseExpiresAt
+		} else {
+			cp.LeaseExpiresAt = nil
+		}
+		if existing.LastRunAt != nil {
+			lastRunAt := *existing.LastRunAt
+			cp.LastRunAt = &lastRunAt
+		} else {
+			cp.LastRunAt = nil
+		}
+		cp.LastError = existing.LastError
+		if createdAtWasZero {
+			cp.CreatedAt = existing.CreatedAt
+		}
+	}
+	cp.UpdatedAt = now
+	m.tasks[cp.ID] = cp
+	m.schedules[cp.ID] = memoryScheduledTaskToPush(cp)
+}
+func (m *MemoryStore) GetScheduledTask(_ context.Context, id string) (*ScheduledTask, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	rec, ok := m.tasks[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return cloneScheduledTask(rec), nil
+}
+func (m *MemoryStore) DeleteScheduledTask(ctx context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tasks[id]; !ok {
+		return ErrNotFound
+	}
+	delete(m.schedules, id)
+	delete(m.tasks, id)
+	return nil
+}
+func (m *MemoryStore) ListScheduledTasksByUser(_ context.Context, createdBy string) ([]*ScheduledTask, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*ScheduledTask, 0, len(m.tasks))
+	for _, rec := range m.tasks {
+		if rec.CreatedBy != createdBy {
+			continue
+		}
+		out = append(out, cloneScheduledTask(rec))
+	}
+	sortScheduledTasks(out)
+	return out, nil
+}
+
+func (m *MemoryStore) ListAllScheduledTasks(_ context.Context) ([]*ScheduledTask, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*ScheduledTask, 0, len(m.tasks))
+	for _, rec := range m.tasks {
+		out = append(out, cloneScheduledTask(rec))
+	}
+	sortScheduledTasks(out)
+	return out, nil
+}
+
+func (m *MemoryStore) ListEnabledScheduledTasks(_ context.Context) ([]*ScheduledTask, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*ScheduledTask, 0, len(m.tasks))
+	for _, rec := range m.tasks {
+		if !rec.Enabled {
+			continue
+		}
+		out = append(out, cloneScheduledTask(rec))
+	}
+	sortScheduledTasks(out)
+	return out, nil
+}
+func (m *MemoryStore) EnsureScheduledTaskRunPartition(_ context.Context, _ time.Time) error {
+	return nil
+}
+func (m *MemoryStore) MaintainScheduledTaskRunPartitions(_ context.Context, _ time.Time, _ int) error {
+	return nil
+}
+func (m *MemoryStore) ClaimDueScheduledTaskRun(_ context.Context, taskID string, now time.Time, runID string, leaseUntil time.Time, nextRunAt time.Time, claimedBy string) (*ScheduledTaskRun, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec, ok := m.tasks[taskID]
+	if !ok || !rec.Enabled || rec.NextRunAt == nil || rec.NextRunAt.After(now) {
+		return nil, ErrNotFound
+	}
+	if rec.ActiveRunID != "" && rec.LeaseExpiresAt != nil && rec.LeaseExpiresAt.After(now) {
+		return nil, ErrNotFound
+	}
+	runKey := scheduledTaskRunKey(*rec.NextRunAt, runID)
+	taskAtKey := scheduledTaskTaskAtKey(taskID, *rec.NextRunAt)
+	for _, run := range m.taskRuns {
+		if scheduledTaskTaskAtKey(run.TaskID, run.ScheduledAt) == taskAtKey {
+			return nil, ErrNotFound
+		}
+	}
+	run := &ScheduledTaskRun{
+		ScheduledAt:    rec.NextRunAt.UTC(),
+		ID:             runID,
+		TaskID:         taskID,
+		StartedAt:      time.Now().UTC(),
+		Status:         "running",
+		ClaimedBy:      claimedBy,
+		ClaimExpiresAt: &leaseUntil,
+	}
+	if m.taskRuns == nil {
+		m.taskRuns = make(map[string]*ScheduledTaskRun)
+	}
+	m.taskRuns[runKey] = cloneScheduledTaskRun(run)
+	rec.ActiveRunID = runID
+	rec.LeaseExpiresAt = &leaseUntil
+	lastRunAt := now.UTC()
+	rec.LastRunAt = &lastRunAt
+	if nextRunAt.IsZero() {
+		rec.NextRunAt = nil
+	} else {
+		next := nextRunAt.UTC()
+		rec.NextRunAt = &next
+	}
+	rec.UpdatedAt = time.Now().UTC()
+	m.schedules[taskID] = memoryScheduledTaskToPush(rec)
+	return cloneScheduledTaskRun(run), nil
+}
+func (m *MemoryStore) ClaimManualScheduledTaskRun(_ context.Context, taskID string, now time.Time, runID string, leaseUntil time.Time, claimedBy string) (*ScheduledTaskRun, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec, ok := m.tasks[taskID]
+	if !ok || !rec.Enabled {
+		return nil, ErrNotFound
+	}
+	if rec.ActiveRunID != "" && rec.LeaseExpiresAt != nil && rec.LeaseExpiresAt.After(now) {
+		return nil, ErrNotFound
+	}
+	scheduledAt := now.UTC()
+	run := &ScheduledTaskRun{
+		ScheduledAt:    scheduledAt,
+		ID:             runID,
+		TaskID:         taskID,
+		StartedAt:      time.Now().UTC(),
+		Status:         "running",
+		ClaimedBy:      claimedBy,
+		ClaimExpiresAt: &leaseUntil,
+	}
+	if m.taskRuns == nil {
+		m.taskRuns = make(map[string]*ScheduledTaskRun)
+	}
+	m.taskRuns[scheduledTaskRunKey(scheduledAt, runID)] = cloneScheduledTaskRun(run)
+	rec.ActiveRunID = runID
+	rec.LeaseExpiresAt = &leaseUntil
+	lastRunAt := scheduledAt
+	rec.LastRunAt = &lastRunAt
+	rec.UpdatedAt = time.Now().UTC()
+	m.schedules[taskID] = memoryScheduledTaskToPush(rec)
+	return cloneScheduledTaskRun(run), nil
+}
+func (m *MemoryStore) FinishScheduledTaskRun(_ context.Context, run *ScheduledTaskRun) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := scheduledTaskRunKey(run.ScheduledAt, run.ID)
+	stored, ok := m.taskRuns[key]
 	if !ok {
 		return ErrNotFound
 	}
-	rec.LastRunAt = lastRunAt
-	rec.NextRunAt = nextRunAt
-	rec.LastError = lastError
-	rec.UpdatedAt = time.Now().UTC()
+	cp := cloneScheduledTaskRun(stored)
+	cp.Status = run.Status
+	cp.AttemptCount = run.AttemptCount
+	cp.Output = run.Output
+	cp.Error = run.Error
+	cp.SessionID = run.SessionID
+	if run.FinishedAt != nil {
+		cp.FinishedAt = run.FinishedAt
+	} else {
+		now := time.Now().UTC()
+		cp.FinishedAt = &now
+	}
+	m.taskRuns[key] = cp
+	if task, ok := m.tasks[run.TaskID]; ok && task.ActiveRunID == run.ID {
+		task.ActiveRunID = ""
+		task.LeaseExpiresAt = nil
+		task.LastError = run.Error
+		task.UpdatedAt = time.Now().UTC()
+		m.schedules[run.TaskID] = memoryScheduledTaskToPush(task)
+	}
+	if run.Status == "failed" || run.Status == "timeout" {
+		total, failures := m.countRecentScheduledTaskFailuresLocked(run.TaskID, 5)
+		if total == 5 && failures == 5 {
+			if task, ok := m.tasks[run.TaskID]; ok {
+				task.Enabled = false
+				task.LastError = "最近 5 次执行均失败,已自动停用"
+				task.UpdatedAt = time.Now().UTC()
+				m.schedules[run.TaskID] = memoryScheduledTaskToPush(task)
+			}
+		}
+	}
 	return nil
+}
+
+func (m *MemoryStore) CountRecentScheduledTaskFailures(_ context.Context, taskID string, limit int) (int, int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	total, failures := m.countRecentScheduledTaskFailuresLocked(taskID, limit)
+	return total, failures, nil
+}
+
+func (m *MemoryStore) BulkMarkScheduledTaskReloadFailures(_ context.Context, failures map[string]string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, msg := range failures {
+		task, ok := m.tasks[id]
+		if !ok {
+			continue
+		}
+		if msg == "" {
+			msg = "定时任务恢复失败"
+		}
+		task.Enabled = false
+		task.LastError = msg
+		task.UpdatedAt = time.Now().UTC()
+		m.schedules[id] = memoryScheduledTaskToPush(task)
+	}
+	return nil
+}
+
+func (m *MemoryStore) countRecentScheduledTaskFailuresLocked(taskID string, limit int) (int, int) {
+	if limit <= 0 || limit > 100 {
+		limit = 5
+	}
+	runs := make([]*ScheduledTaskRun, 0, len(m.taskRuns))
+	for _, rec := range m.taskRuns {
+		if rec.TaskID != taskID || rec.Status == "running" {
+			continue
+		}
+		runs = append(runs, rec)
+	}
+	sort.Slice(runs, func(i, j int) bool {
+		return runs[i].ScheduledAt.After(runs[j].ScheduledAt)
+	})
+	if len(runs) > limit {
+		runs = runs[:limit]
+	}
+	failures := 0
+	for _, run := range runs {
+		if run.Status == "failed" || run.Status == "timeout" {
+			failures++
+		}
+	}
+	return len(runs), failures
+}
+
+func (m *MemoryStore) ListScheduledTaskRuns(_ context.Context, taskID string, limit int) ([]*ScheduledTaskRun, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	out := make([]*ScheduledTaskRun, 0, len(m.taskRuns))
+	for _, rec := range m.taskRuns {
+		if rec.TaskID != taskID {
+			continue
+		}
+		out = append(out, cloneScheduledTaskRun(rec))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].ScheduledAt.After(out[j].ScheduledAt)
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func cloneScheduledTask(rec *ScheduledTask) *ScheduledTask {
+	if rec == nil {
+		return nil
+	}
+	cp := *rec
+	if rec.TargetConfig != nil {
+		cp.TargetConfig = make(map[string]any, len(rec.TargetConfig))
+		for k, v := range rec.TargetConfig {
+			cp.TargetConfig[k] = v
+		}
+	}
+	if rec.LastRunAt != nil {
+		t := *rec.LastRunAt
+		cp.LastRunAt = &t
+	}
+	if rec.NextRunAt != nil {
+		t := *rec.NextRunAt
+		cp.NextRunAt = &t
+	}
+	if rec.LeaseExpiresAt != nil {
+		t := *rec.LeaseExpiresAt
+		cp.LeaseExpiresAt = &t
+	}
+	return &cp
+}
+func cloneScheduledTaskRun(rec *ScheduledTaskRun) *ScheduledTaskRun {
+	if rec == nil {
+		return nil
+	}
+	cp := *rec
+	if rec.FinishedAt != nil {
+		t := *rec.FinishedAt
+		cp.FinishedAt = &t
+	}
+	if rec.ClaimExpiresAt != nil {
+		t := *rec.ClaimExpiresAt
+		cp.ClaimExpiresAt = &t
+	}
+	return &cp
+}
+func sortScheduledTasks(records []*ScheduledTask) {
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].CreatedAt.Equal(records[j].CreatedAt) {
+			return records[i].ID < records[j].ID
+		}
+		return records[i].CreatedAt.Before(records[j].CreatedAt)
+	})
+}
+func scheduledTaskRunKey(scheduledAt time.Time, runID string) string {
+	return scheduledAt.UTC().Format(time.RFC3339Nano) + "/" + runID
+}
+func scheduledTaskTaskAtKey(taskID string, scheduledAt time.Time) string {
+	return taskID + "/" + scheduledAt.UTC().Format(time.RFC3339Nano)
 }
 func (m *MemoryStore) GetMCPServer(_ context.Context, _ string) (*MCPServerRecord, error) {
 	return nil, ErrNotFound

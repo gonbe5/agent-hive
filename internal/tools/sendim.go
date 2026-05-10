@@ -7,22 +7,14 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/chef-guo/agents-hive/internal/auth"
+	"github.com/chef-guo/agents-hive/internal/imctx"
 	"github.com/chef-guo/agents-hive/internal/mcphost"
 )
 
-// IMPlatform IM 平台类型
-type IMPlatform string
-
-// IMMessage IM 消息（避免循环依赖）
-type IMMessage struct {
-	Platform IMPlatform
-	ChatID   string
-	Content  string
-}
-
 // IMRouter IM 路由器接口（避免直接依赖 channel 包）
 type IMRouter interface {
-	SendMessage(ctx context.Context, platform, chatID, content string) error
+	SendMessage(ctx context.Context, req imctx.SendRequest) error
 }
 
 // sendIMMessageInput send_im_message 工具的输入参数
@@ -44,8 +36,7 @@ func RegisterSendIMMessage(host *mcphost.Host, logger *zap.Logger, router IMRout
 					"dingtalk",
 					"feishu",
 					"wecom",
-					"wechat-wechaty",
-					"wechat-wechatpadpro",
+					"wechatbot",
 				},
 				"description": "IM 平台名称",
 			},
@@ -84,8 +75,22 @@ func RegisterSendIMMessage(host *mcphost.Host, logger *zap.Logger, router IMRout
 				return errorResult("content 参数不能为空"), nil
 			}
 
+			req := imctx.SendRequest{
+				Platform: imctx.Platform(params.Platform),
+				ChatID:   params.ChatID,
+				Content:  params.Content,
+			}
+			if req.Platform == imctx.PlatformWeChatBot {
+				user := auth.UserFrom(ctx)
+				if user == nil || user.ID == "" {
+					return errorResult("wechatbot 发送需要已登录用户上下文，无法从模型输入 owner_user_id"), nil
+				}
+				req.OwnerUserID = user.ID
+				req.TenantKey = user.ID
+			}
+
 			// 发送消息
-			if err := router.SendMessage(ctx, params.Platform, params.ChatID, params.Content); err != nil {
+			if err := router.SendMessage(ctx, req); err != nil {
 				logger.Error("发送 IM 消息失败",
 					zap.String("platform", params.Platform),
 					zap.String("chat_id", params.ChatID),

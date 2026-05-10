@@ -23,9 +23,6 @@ import (
 	"github.com/chef-guo/agents-hive/internal/channel/dingtalk"
 	"github.com/chef-guo/agents-hive/internal/channel/feishu"
 	pushsvc "github.com/chef-guo/agents-hive/internal/channel/push"
-	wchat "github.com/chef-guo/agents-hive/internal/channel/wechat"
-	"github.com/chef-guo/agents-hive/internal/channel/wechat/wechatpadpro"
-	"github.com/chef-guo/agents-hive/internal/channel/wechat/wechaty"
 	"github.com/chef-guo/agents-hive/internal/channel/wecom"
 	"github.com/chef-guo/agents-hive/internal/config"
 	"github.com/chef-guo/agents-hive/internal/controlplane"
@@ -97,8 +94,6 @@ type ServerComponents struct {
 	ChannelRouter       *channel.Router
 	PushService         *pushsvc.Service
 	FeishuChatStateRepo feishu.ChatStateRepo
-	WechatBackend       interface{}
-	wechatPlugins       []*wchat.Plugin // WeChat 插件，需要 Start(ctx) 启动
 	ACPPool             *acpclient.ACPClientPool
 	Gateway             *gateway.Gateway
 	ConfigMu            sync.RWMutex
@@ -519,7 +514,7 @@ func InitServer(cfg *config.Config, configPath string, logger *zap.Logger) *Serv
 	sc.ACPPool = initACPAgents(sc.Master, cfg, logger)
 
 	// 13. IM Channels（使用 DB 覆盖后的 cfg）
-	sc.ChannelRouter, sc.WechatBackend, sc.wechatPlugins = initChannels(sc, cfg, logger)
+	sc.ChannelRouter = initChannels(sc, cfg, logger)
 
 	// 14.1 延迟注册 IM 相关工具（依赖 channelRouter 和飞书凭证）
 	if sc.ChannelRouter != nil {
@@ -601,13 +596,8 @@ func (sc *ServerComponents) StartSkillWatcher(ctx context.Context, logger *zap.L
 	logger.Info("Skill Watcher 已启动（热重载）")
 }
 
-// StartChannels 启动需要 ctx 的 WeChat 插件（Wechaty/WeChatPadPro）
+// StartChannels 启动需要 ctx 的通道插件。
 func (sc *ServerComponents) StartChannels(ctx context.Context, logger *zap.Logger) {
-	for _, p := range sc.wechatPlugins {
-		if err := p.Start(ctx); err != nil {
-			logger.Error("WeChat 插件启动失败", zap.Error(err))
-		}
-	}
 }
 
 // --- 内部初始化函数 ---
@@ -1270,10 +1260,8 @@ func initACPAgents(m *master.Master, cfg *config.Config, logger *zap.Logger) *ac
 	return pool
 }
 
-func initChannels(sc *ServerComponents, cfg *config.Config, logger *zap.Logger) (*channel.Router, interface{}, []*wchat.Plugin) {
+func initChannels(sc *ServerComponents, cfg *config.Config, logger *zap.Logger) *channel.Router {
 	var channelRouter *channel.Router
-	var wechatBackend interface{}
-	var wechatPlugins []*wchat.Plugin
 
 	// 即使当前没有 channel 启用，也创建 router，使 channel.reload 热重载可正常工作
 	if cfg.ControlPlane.Enabled {
@@ -1342,12 +1330,16 @@ func initChannels(sc *ServerComponents, cfg *config.Config, logger *zap.Logger) 
 		}, logger)
 	}
 	sc.PushService = pushService
-	if sc.Master != nil && pushService != nil {
-		sc.Master.SetScheduledPromptDispatcher(pushService.DispatchScheduledPrompt)
+	if sc.Master != nil {
+		if pushService != nil {
+			sc.Master.SetScheduledPromptDispatcher(pushService.DispatchScheduledPrompt)
+			sc.Master.SetScheduledTaskPushService(pushService)
+		}
+		if sc.AuthEngine != nil {
+			sc.Master.SetScheduledTaskUserResolver(sc.AuthEngine)
+		}
 		if sc.DB != nil {
-			if err := restoreFeishuPushSchedules(context.Background(), sc.Master, sc.DB, pushService.DispatchScheduledPrompt, logger); err != nil {
-				logger.Warn("恢复飞书定时推送失败", zap.Error(err))
-			}
+			restoreScheduledTasksAsync(context.Background(), sc.Master, sc.DB, logger)
 		}
 	}
 
@@ -1384,7 +1376,8 @@ func initChannels(sc *ServerComponents, cfg *config.Config, logger *zap.Logger) 
 			}
 			return auth.WithUser(ctx, user)
 		})
-		logger.Info("IM 用户关联已启用（ContextEnricher 已注入）")
+		channelRouter.SetOwnerUserResolver(authEngine.GetUserByIDCached)
+		logger.Info("IM 用户关联已启用（ContextEnricher / OwnerUserResolver 已注入）")
 	}
 
 	// 注册各 IM 插件
@@ -1464,28 +1457,7 @@ func initChannels(sc *ServerComponents, cfg *config.Config, logger *zap.Logger) 
 		channelRouter.RegisterPlugin(wcPlugin)
 		logger.Info("企业微信 Channel 插件已注册")
 	}
-	if cfg.Channel.WeChat.Wechaty.Enabled {
-		protocol := wechaty.New(cfg.Channel.WeChat.Wechaty, logger)
-		p := wchat.New("wechaty", protocol, channelRouter, logger)
-		channelRouter.RegisterPlugin(p)
-		wechatPlugins = append(wechatPlugins, p)
-		logger.Info("Wechaty Channel 插件已注册")
-	}
-	if cfg.Channel.WeChat.WeChatPadPro.Enabled {
-		protocol := wechatpadpro.New(cfg.Channel.WeChat.WeChatPadPro, logger)
-		wechatBackend = protocol
-		p := wchat.New("wechatpadpro", protocol, channelRouter, logger)
-		channelRouter.RegisterPlugin(p)
-		wechatPlugins = append(wechatPlugins, p)
-		logger.Info("WeChatPadPro Channel 插件已注册")
-
-		n := tools.RegisterWechatOpsTools(sc.MCPHost, logger, protocol)
-		if n > 0 {
-			logger.Info("微信操作 MCP 工具已注册", zap.Int("count", n))
-		}
-	}
-
-	return channelRouter, wechatBackend, wechatPlugins
+	return channelRouter
 }
 
 func initGateway(sc *ServerComponents, cfg *config.Config, configPath string, logger *zap.Logger) *gateway.Gateway {
@@ -1501,7 +1473,6 @@ func initGateway(sc *ServerComponents, cfg *config.Config, configPath string, lo
 		ChannelRouter: sc.ChannelRouter,
 		PluginLoader:  sc.PluginMgr,
 		MCPHost:       sc.MCPHost,
-		WechatBackend: sc.WechatBackend,
 		ACPClientPool: sc.ACPPool,
 		Config:        cfg,
 		ConfigMu:      &sc.ConfigMu,

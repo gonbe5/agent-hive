@@ -66,16 +66,16 @@ const (
 	CodeInputNotPending = 7004 // 回复了不存在的输入请求
 
 	// Channel 错误 (8xxx)
-	CodeChannelSendFailed         = 8000 // 消息发送失败
-	CodeChannelWebhookInvalid     = 8001 // Webhook 请求无效
-	CodeChannelPlatformNotFound   = 8002 // 平台未注册
-	CodeChannelBindingNotFound    = 8003 // 绑定不存在
-	CodeWeChatLoginFailed         = 8010 // 微信登录失败
-	CodeWeChatProtocolError       = 8011 // 微信协议通信错误
-	CodeWeChatNotLoggedIn         = 8012 // 微信未登录
-	CodeWeChatPadProAPIError      = 8013 // WeChatPadPro API 调用失败
-	CodeWeChatPadProConnectFailed = 8014 // 无法连接到 WeChatPadPro 服务
-	CodeWeChatPadProInvalidResp   = 8015 // WeChatPadPro API 返回无效响应
+	CodeChannelSendFailed       = 8000 // 消息发送失败
+	CodeChannelWebhookInvalid   = 8001 // Webhook 请求无效
+	CodeChannelPlatformNotFound = 8002 // 平台未注册
+	CodeChannelBindingNotFound  = 8003 // 绑定不存在
+	CodeWeChatLoginFailed       = 8010 // 微信登录失败
+	CodeWeChatProtocolError     = 8011 // 微信协议通信错误
+	CodeWeChatNotLoggedIn       = 8012 // 微信未登录
+	CodeWeChatAPIError          = 8013 // 微信官方 SDK 调用失败
+	CodeWeChatConnectFailed     = 8014 // 无法连接到微信官方 SDK 服务
+	CodeWeChatInvalidResp       = 8015 // 微信官方 SDK 返回无效响应
 
 	// Security 错误 (9xxx)
 	CodeExecDenied          = 9000 // 命令被安全策略拒绝

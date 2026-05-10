@@ -125,7 +125,7 @@ func TestRegisterAllMethods_NilConfigMu(t *testing.T) {
 func TestRegisterAllMethods_OptionalDeps(t *testing.T) {
 	gw, _ := newTestGateway(t)
 	deps := Deps{
-		// CommandRegistry、ChannelRouter、PluginLoader、MCPHost、WechatBackend 均为 nil
+		// CommandRegistry、ChannelRouter、PluginLoader、MCPHost 均为 nil
 		Config:        nil,
 		ConfigMu:      nil,
 		SkillRegistry: skills.NewRegistry(zap.NewNop()),
@@ -600,66 +600,6 @@ func TestChannelSend_InvalidParams(t *testing.T) {
 	var resp RPCResponse
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
 	assert.NotNil(t, resp.Error)
-}
-
-// TestWechatMethods_BackendNotConfigurator 验证微信后端不实现接口时的错误处理
-func TestWechatMethods_BackendNotConfigurator(t *testing.T) {
-	gw, token := newTestGateway(t)
-
-	// 传入不实现 wechatConfigurator 接口的对象
-	deps := Deps{WechatBackend: struct{}{}}
-	registerWechatMethods(gw, deps)
-
-	resp := doRPC(t, gw, "channel.wechat.status", map[string]interface{}{}, token)
-	assert.NotNil(t, resp.Error, "未实现接口时应返回错误")
-	assert.Equal(t, 500, resp.Error.Code)
-}
-
-// TestWechatMethods_MockBackend 验证微信后端实现接口时的正常调用
-func TestWechatMethods_MockBackend(t *testing.T) {
-	gw, token := newTestGateway(t)
-
-	backend := &mockWechatBackend{loggedIn: true}
-	deps := Deps{WechatBackend: backend}
-	registerWechatMethods(gw, deps)
-
-	t.Run("channel.wechat.status 返回登录状态", func(t *testing.T) {
-		resp := doRPC(t, gw, "channel.wechat.status", map[string]interface{}{}, token)
-		assert.Nil(t, resp.Error, "应成功，实际错误: %v", resp.Error)
-
-		var result map[string]bool
-		require.NoError(t, json.Unmarshal(resp.Result, &result))
-		assert.True(t, result["logged_in"])
-	})
-
-	t.Run("channel.wechat.config 更新配置", func(t *testing.T) {
-		params := map[string]string{
-			"base_url":  "http://localhost:8888",
-			"admin_key": "secret",
-		}
-		resp := doRPC(t, gw, "channel.wechat.config", params, token)
-		assert.Nil(t, resp.Error, "应成功，实际错误: %v", resp.Error)
-
-		var result map[string]string
-		require.NoError(t, json.Unmarshal(resp.Result, &result))
-		assert.Equal(t, "updated", result["status"])
-		// 验证 Reconfigure 被调用
-		assert.Equal(t, "http://localhost:8888", backend.lastBaseURL)
-		assert.Equal(t, "secret", backend.lastKey)
-	})
-}
-
-// mockWechatBackend 用于测试 wechatConfigurator 接口
-type mockWechatBackend struct {
-	loggedIn    bool
-	lastBaseURL string
-	lastKey     string
-}
-
-func (m *mockWechatBackend) IsLoggedIn() bool { return m.loggedIn }
-func (m *mockWechatBackend) Reconfigure(baseURL, key string) {
-	m.lastBaseURL = baseURL
-	m.lastKey = key
 }
 
 // ─────────────────────────────────────────────

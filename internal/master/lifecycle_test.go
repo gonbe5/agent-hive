@@ -509,7 +509,7 @@ func TestPermissionManager_StructuredDanger_FeishuReadAllowsButSendAsks(t *testi
 	}
 }
 
-func TestPermissionManager_StructuredDanger_WechatReadAllowsButMutationAsks(t *testing.T) {
+func TestPermissionManager_StructuredDanger_SendIMAsks(t *testing.T) {
 	m, cancel := setupDefaultPermissionMaster(t)
 	defer cancel()
 	defer m.Stop()
@@ -517,30 +517,23 @@ func TestPermissionManager_StructuredDanger_WechatReadAllowsButMutationAsks(t *t
 	subID, ch := m.SubscribeWSBroadcast()
 	defer m.UnsubscribeWSBroadcast(subID)
 
-	listErr := callCheckPermission(t, m, "im-wechat-read", "wechat_contacts", mustJSON(t, map[string]any{
-		"action": "list",
-	}))
-	if listErr != nil {
-		t.Fatalf("wechat_contacts.list 应直接放行: %v", listErr)
-	}
-	assertNoPermissionBroadcast(t, ch, "wechat_contacts.list")
-
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- callCheckPermission(t, m, "im-wechat-delete", "wechat_contacts", mustJSON(t, map[string]any{
-			"action": "delete",
-			"wxid":   "wxid_xxx",
+		errCh <- callCheckPermission(t, m, "im-wechatbot-send", "send_im_message", mustJSON(t, map[string]any{
+			"platform": "wechatbot",
+			"chat_id":  "wxid_xxx",
+			"content":  "hello",
 		}))
 	}()
 
-	approveNextPermissionRequest(t, m, ch, "im-wechat-delete", "wechat_contacts")
+	approveNextPermissionRequest(t, m, ch, "im-wechatbot-send", "send_im_message")
 	select {
 	case err := <-errCh:
 		if err != nil {
-			t.Fatalf("wechat_contacts.delete approve 后应放行: %v", err)
+			t.Fatalf("send_im_message approve 后应放行: %v", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("wechat_contacts.delete 权限函数未在审批后返回")
+		t.Fatal("send_im_message 权限函数未在审批后返回")
 	}
 }
 

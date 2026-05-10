@@ -150,22 +150,41 @@ func TestRouterBindAndLookup(t *testing.T) {
 	// 绑定
 	router.Bind(Binding{
 		Platform:  PlatformDingTalk,
+		TenantKey: "tenant-a",
 		ChatID:    "chat-001",
 		SessionID: "session-abc",
 	})
 
 	// 查找
-	sid := router.LookupSession(PlatformDingTalk, "chat-001")
+	sid := router.LookupSessionForTenant(PlatformDingTalk, "tenant-a", "chat-001")
 	assert.Equal(t, "session-abc", sid)
 
+	assert.Equal(t, "", router.LookupSessionForTenant(PlatformDingTalk, "tenant-b", "chat-001"))
+
 	// 未绑定的返回空
-	sid = router.LookupSession(PlatformFeishu, "chat-001")
+	sid = router.LookupSessionForTenant(PlatformFeishu, "tenant-a", "chat-001")
 	assert.Equal(t, "", sid)
 
 	// 解绑
-	router.Unbind(PlatformDingTalk, "chat-001")
-	sid = router.LookupSession(PlatformDingTalk, "chat-001")
+	router.UnbindForTenant(PlatformDingTalk, "tenant-a", "chat-001")
+	sid = router.LookupSessionForTenant(PlatformDingTalk, "tenant-a", "chat-001")
 	assert.Equal(t, "", sid)
+}
+
+func TestBindingKeyIncludesTenant(t *testing.T) {
+	logger := zap.NewNop()
+	router := NewRouter(&mockProcessor{}, logger)
+
+	router.Bind(Binding{Platform: PlatformFeishu, TenantKey: "tenant-a", ChatID: "chat-001", SessionID: "session-a"})
+	router.Bind(Binding{Platform: PlatformFeishu, TenantKey: "tenant-b", ChatID: "chat-001", SessionID: "session-b"})
+
+	assert.Equal(t, "session-a", router.LookupSessionForTenant(PlatformFeishu, "tenant-a", "chat-001"))
+	assert.Equal(t, "session-b", router.LookupSessionForTenant(PlatformFeishu, "tenant-b", "chat-001"))
+	assert.Equal(t, "", router.LookupSession(PlatformFeishu, "chat-001"))
+
+	router.UnbindForTenant(PlatformFeishu, "tenant-a", "chat-001")
+	assert.Equal(t, "", router.LookupSessionForTenant(PlatformFeishu, "tenant-a", "chat-001"))
+	assert.Equal(t, "session-b", router.LookupSessionForTenant(PlatformFeishu, "tenant-b", "chat-001"))
 }
 
 func TestRouterRegisterPlugin(t *testing.T) {
@@ -195,6 +214,7 @@ func TestRouterHandleMessage(t *testing.T) {
 	router.RegisterPlugin(plugin)
 	router.Bind(Binding{
 		Platform:  PlatformDingTalk,
+		TenantKey: "tenant-a",
 		ChatID:    "chat-001",
 		SessionID: "session-abc",
 	})
@@ -240,6 +260,7 @@ func TestRouterInboundController_ResetRebindsSession(t *testing.T) {
 	router.RegisterPlugin(plugin)
 	router.Bind(Binding{
 		Platform:  PlatformFeishu,
+		TenantKey: "tenant-a",
 		ChatID:    "chat-001",
 		SessionID: "old-session",
 	})
@@ -252,7 +273,7 @@ func TestRouterInboundController_ResetRebindsSession(t *testing.T) {
 		Content:    "/reset",
 	})
 	assert.NoError(t, err)
-	assert.Equal(t, "new-session", router.LookupSession(PlatformFeishu, "chat-001"))
+	assert.Equal(t, "new-session", router.LookupSessionForTenant(PlatformFeishu, "tenant-a", "chat-001"))
 	assert.Equal(t, "会话已重置: new-session", plugin.getLastMsg().Content)
 }
 
@@ -275,6 +296,7 @@ func TestRouterInboundController_DropSkipsProcessingAndReply(t *testing.T) {
 	router.RegisterPlugin(plugin)
 	router.Bind(Binding{
 		Platform:  PlatformFeishu,
+		TenantKey: "tenant-a",
 		ChatID:    "chat-evicted",
 		SessionID: "sess-evicted",
 	})
@@ -309,6 +331,7 @@ func TestRouterInboundController_ModelOverridePassesToIMProcessor(t *testing.T) 
 	router.RegisterPlugin(plugin)
 	router.Bind(Binding{
 		Platform:  PlatformFeishu,
+		TenantKey: "tenant-a",
 		ChatID:    "chat-model",
 		SessionID: "sess-model",
 	})
@@ -344,6 +367,7 @@ func TestRouterHandleMessage_Debounce(t *testing.T) {
 	router.RegisterPlugin(plugin)
 	router.Bind(Binding{
 		Platform:  PlatformDingTalk,
+		TenantKey: defaultTenantKey,
 		ChatID:    "chat-001",
 		SessionID: "session-abc",
 	})
@@ -398,6 +422,7 @@ func TestRouterHandleMessage_NoDebounceBypassesBatchMerge(t *testing.T) {
 	router.RegisterPlugin(plugin)
 	router.Bind(Binding{
 		Platform:  PlatformFeishu,
+		TenantKey: defaultTenantKey,
 		ChatID:    "chat-001",
 		SessionID: "session-abc",
 	})
@@ -433,15 +458,17 @@ func TestRouterHandleMessage_NoDebounceBypassesBatchMerge(t *testing.T) {
 
 // ctxCaptureProcessor 捕获 ProcessMessage 调用时的 context，用于验证 enrichCtx 注入
 type ctxCaptureProcessor struct {
-	mu       sync.Mutex
-	lastCtx  context.Context
-	response master.TaskResponse
+	mu            sync.Mutex
+	lastCtx       context.Context
+	lastSessionID string
+	response      master.TaskResponse
 }
 
-func (c *ctxCaptureProcessor) ProcessMessage(ctx context.Context, _ string, _ string) (master.TaskResponse, error) {
+func (c *ctxCaptureProcessor) ProcessMessage(ctx context.Context, sessionID string, _ string) (master.TaskResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.lastCtx = ctx
+	c.lastSessionID = sessionID
 	return c.response, nil
 }
 
@@ -449,6 +476,18 @@ func (c *ctxCaptureProcessor) getLastCtx() context.Context {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.lastCtx
+}
+
+func (c *ctxCaptureProcessor) wasCalled() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastCtx != nil
+}
+
+func (c *ctxCaptureProcessor) getLastSessionID() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastSessionID
 }
 
 // TestHandleMessage_UserAssociation 验证私聊消息且 enrichCtx 找到用户时，context 中注入了 user
@@ -526,6 +565,226 @@ func TestHandleMessage_UnknownUser(t *testing.T) {
 	assert.Nil(t, gotUser)
 }
 
+func TestRouterUserScopedSkipsEnrichCtxAndInjectsOwnerUser(t *testing.T) {
+	logger := zap.NewNop()
+	proc := &ctxCaptureProcessor{response: master.TaskResponse{Content: "ok", Completed: true}}
+	router := NewRouter(proc, logger)
+
+	plugin := &mockPlugin{platform: PlatformWeChatBot}
+	router.RegisterPlugin(plugin)
+
+	var enrichCalled bool
+	router.SetContextEnricher(func(ctx context.Context, _, _ string) context.Context {
+		enrichCalled = true
+		return ctx
+	})
+	router.SetOwnerUserResolver(func(_ context.Context, userID string) (*auth.User, error) {
+		assert.Equal(t, "user-owner-1", userID)
+		return &auth.User{ID: userID, Status: "active"}, nil
+	})
+
+	err := router.HandleMessage(context.Background(), InboundMessage{
+		MessageID:   "msg-owner-1",
+		Platform:    PlatformWeChatBot,
+		TenantKey:   "user-owner-1",
+		OwnerUserID: "user-owner-1",
+		ChatID:      "wx-chat-1",
+		SenderID:    "wx-sender-1",
+		ChatType:    ChatDirect,
+		Content:     "hello",
+		NoDebounce:  true,
+	})
+	assert.NoError(t, err)
+
+	assert.False(t, enrichCalled)
+	gotCtx := proc.getLastCtx()
+	assert.NotNil(t, gotCtx)
+	gotUser := auth.UserFrom(gotCtx)
+	if assert.NotNil(t, gotUser) {
+		assert.Equal(t, "user-owner-1", gotUser.ID)
+	}
+	imValue, ok := IMContextFrom(gotCtx)
+	assert.True(t, ok)
+	assert.Equal(t, "user-owner-1", imValue.InternalUserID)
+	assert.Equal(t, "im-wechatbot-user_owner_1-wx_chat_1", proc.getLastSessionID())
+
+	sent := plugin.getLastMsg()
+	assert.Equal(t, PlatformWeChatBot, sent.Platform)
+	assert.Equal(t, "user-owner-1", sent.TenantKey)
+	assert.Equal(t, "user-owner-1", sent.OwnerUserID)
+	assert.Equal(t, "wx-chat-1", sent.ChatID)
+	assert.Equal(t, "msg-owner-1", sent.ReplyTo)
+}
+
+func TestRouterUserScopedRejectsTenantMismatch(t *testing.T) {
+	logger := zap.NewNop()
+	proc := &ctxCaptureProcessor{response: master.TaskResponse{Content: "ok", Completed: true}}
+	router := NewRouter(proc, logger)
+	router.RegisterPlugin(&mockPlugin{platform: PlatformWeChatBot})
+	q := NewMemoryRetryQueue(0, logger)
+	router.SetRetryQueue(q)
+	router.SetOwnerUserResolver(func(context.Context, string) (*auth.User, error) {
+		t.Fatal("tenant mismatch must fail before owner resolver")
+		return nil, nil
+	})
+
+	err := router.HandleMessage(context.Background(), InboundMessage{
+		MessageID:   "msg-owner-mismatch",
+		Platform:    PlatformWeChatBot,
+		TenantKey:   "tenant-other",
+		OwnerUserID: "user-owner-1",
+		ChatID:      "wx-chat-1",
+		Content:     "hello",
+		NoDebounce:  true,
+	})
+	assert.NoError(t, err)
+
+	assert.False(t, proc.wasCalled())
+	if assert.Equal(t, 1, q.Len()) {
+		assert.Equal(t, RetryReasonHandlerError, q.Snapshot()[0].Reason)
+		assert.Equal(t, "tenant-other", q.Snapshot()[0].TenantKey)
+	}
+}
+
+func TestRouterTenantScopedEnrichCtxUnchanged(t *testing.T) {
+	logger := zap.NewNop()
+	proc := &ctxCaptureProcessor{response: master.TaskResponse{Content: "ok", Completed: true}}
+	router := NewRouter(proc, logger)
+	router.RegisterPlugin(&mockPlugin{platform: PlatformFeishu})
+
+	wantUser := &auth.User{ID: "tenant-user-1", ExternalID: "open-id-1", AuthProvider: "feishu"}
+	router.SetContextEnricher(func(ctx context.Context, externalID, provider string) context.Context {
+		assert.Equal(t, "open-id-1", externalID)
+		assert.Equal(t, "feishu", provider)
+		return auth.WithUser(ctx, wantUser)
+	})
+	router.SetOwnerUserResolver(func(context.Context, string) (*auth.User, error) {
+		t.Fatal("tenant-scoped inbound must not call owner resolver")
+		return nil, nil
+	})
+
+	err := router.HandleMessage(context.Background(), InboundMessage{
+		MessageID:  "msg-tenant-1",
+		Platform:   PlatformFeishu,
+		TenantKey:  "tenant-a",
+		ChatID:     "oc-chat-1",
+		SenderID:   "open-id-1",
+		ChatType:   ChatDirect,
+		Content:    "hello",
+		NoDebounce: true,
+	})
+	assert.NoError(t, err)
+
+	gotCtx := proc.getLastCtx()
+	assert.NotNil(t, gotCtx)
+	gotUser := auth.UserFrom(gotCtx)
+	if assert.NotNil(t, gotUser) {
+		assert.Equal(t, "tenant-user-1", gotUser.ID)
+	}
+	imValue, ok := IMContextFrom(gotCtx)
+	assert.True(t, ok)
+	assert.Equal(t, "tenant-user-1", imValue.InternalUserID)
+	assert.Equal(t, "im-feishu-tenant_a-oc_chat_1", proc.getLastSessionID())
+}
+
+func TestRouterUserScopedCommandResponseIncludesOwner(t *testing.T) {
+	logger := zap.NewNop()
+	proc := &mockProcessor{}
+	router := NewRouter(proc, logger)
+
+	plugin := &mockInboundControllerPlugin{
+		mockPlugin: mockPlugin{platform: PlatformWeChatBot},
+		result: InboundControlResult{
+			Handled:  true,
+			Response: "命令已处理",
+		},
+	}
+	router.RegisterPlugin(plugin)
+	router.SetOwnerUserResolver(func(_ context.Context, userID string) (*auth.User, error) {
+		return &auth.User{ID: userID, Status: "active"}, nil
+	})
+
+	err := router.HandleMessage(context.Background(), InboundMessage{
+		MessageID:   "msg-cmd-1",
+		Platform:    PlatformWeChatBot,
+		TenantKey:   "user-owner-1",
+		OwnerUserID: "user-owner-1",
+		ChatID:      "wx-chat-1",
+		SenderID:    "wx-sender-1",
+		ChatType:    ChatDirect,
+		Content:     "/reset",
+		NoDebounce:  true,
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, "", proc.getLastInput())
+
+	sent := plugin.getLastMsg()
+	assert.Equal(t, "命令已处理", sent.Content)
+	assert.Equal(t, "user-owner-1", sent.TenantKey)
+	assert.Equal(t, "user-owner-1", sent.OwnerUserID)
+	assert.Equal(t, "wx-chat-1", sent.ChatID)
+	assert.Equal(t, "msg-cmd-1", sent.ReplyTo)
+}
+
+func TestRouterUserScopedNotifyErrorIncludesOwner(t *testing.T) {
+	logger := zap.NewNop()
+	proc := &mockProcessor{err: assert.AnError}
+	router := NewRouter(proc, logger)
+
+	plugin := &mockPlugin{platform: PlatformWeChatBot}
+	router.RegisterPlugin(plugin)
+	router.SetOwnerUserResolver(func(_ context.Context, userID string) (*auth.User, error) {
+		return &auth.User{ID: userID, Status: "active"}, nil
+	})
+
+	err := router.HandleMessage(context.Background(), InboundMessage{
+		MessageID:   "msg-error-1",
+		Platform:    PlatformWeChatBot,
+		TenantKey:   "user-owner-1",
+		OwnerUserID: "user-owner-1",
+		ChatID:      "wx-chat-1",
+		SenderID:    "wx-sender-1",
+		ChatType:    ChatDirect,
+		Content:     "hello",
+		NoDebounce:  true,
+	})
+	assert.NoError(t, err)
+
+	sent := plugin.getLastMsg()
+	assert.Equal(t, "抱歉，消息处理失败，请稍后重试。", sent.Content)
+	assert.Equal(t, "user-owner-1", sent.TenantKey)
+	assert.Equal(t, "user-owner-1", sent.OwnerUserID)
+	assert.Equal(t, "wx-chat-1", sent.ChatID)
+	assert.Equal(t, "msg-error-1", sent.ReplyTo)
+}
+
+func TestRouterSendMessageConvertsSendRequest(t *testing.T) {
+	logger := zap.NewNop()
+	router := NewRouter(&mockProcessor{}, logger)
+	plugin := &mockPlugin{platform: PlatformWeChatBot}
+	router.RegisterPlugin(plugin)
+
+	err := router.SendMessage(context.Background(), imctx.SendRequest{
+		Platform:    imctx.PlatformWeChatBot,
+		TenantKey:   "user-owner-1",
+		OwnerUserID: "user-owner-1",
+		ChatID:      "wx-chat-1",
+		Content:     "Web 回复",
+		MsgType:     string(MsgTypeText),
+		ReplyTo:     "msg-source-1",
+	})
+	assert.NoError(t, err)
+
+	sent := plugin.getLastMsg()
+	assert.Equal(t, PlatformWeChatBot, sent.Platform)
+	assert.Equal(t, "user-owner-1", sent.TenantKey)
+	assert.Equal(t, "user-owner-1", sent.OwnerUserID)
+	assert.Equal(t, "wx-chat-1", sent.ChatID)
+	assert.Equal(t, "Web 回复", sent.Content)
+	assert.Equal(t, MsgTypeText, sent.MsgType)
+	assert.Equal(t, "msg-source-1", sent.ReplyTo)
+}
+
 func TestRouterHandleMessage_FeishuResolverPassesIMContextAndMetrics(t *testing.T) {
 	logger := zap.NewNop()
 	proc := &imCaptureProcessor{
@@ -539,6 +798,7 @@ func TestRouterHandleMessage_FeishuResolverPassesIMContextAndMetrics(t *testing.
 	router.RegisterPlugin(plugin)
 	router.Bind(Binding{
 		Platform:  PlatformFeishu,
+		TenantKey: defaultTenantKey,
 		ChatID:    "oc_feishu_chat",
 		SessionID: "session-feishu",
 	})
@@ -598,6 +858,7 @@ func TestRouterHandleMessage_FeishuResolverErrorStillEmitsDurationMetric(t *test
 	router.RegisterPlugin(plugin)
 	router.Bind(Binding{
 		Platform:  PlatformFeishu,
+		TenantKey: defaultTenantKey,
 		ChatID:    "oc_feishu_chat",
 		SessionID: "session-feishu",
 	})

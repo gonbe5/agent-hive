@@ -116,14 +116,14 @@ func TestBuildToolPolicy_MasterProfile_NotFull(t *testing.T) {
 	}
 
 	// master_direct profile 应允许所有常用工具（P0-3 Phase 1）
-	for _, name := range []string{"bash", "write_file", "edit", "multiedit", "apply_patch", "create_tool", "remove_tool", "read_file", "glob", "grep", "tool_search", "skill", "memory", "question", "spawn_agent", "task", "parallel_dispatch", "send_im_message", "feishu_api", "wechat_send_rich_message", "wechat_contacts"} {
+	for _, name := range []string{"bash", "write_file", "edit", "multiedit", "apply_patch", "create_tool", "remove_tool", "read_file", "glob", "grep", "tool_search", "skill", "memory", "question", "spawn_agent", "task", "parallel_dispatch", "send_im_message", "feishu_api"} {
 		if !filter.IsAllowed(name) {
 			t.Errorf("master_direct profile 应允许 %q", name)
 		}
 	}
 
 	// 不在 master_direct 中的工具应被拒绝
-	for _, name := range []string{"wechat_ops"} {
+	for _, name := range []string{"removed_social_ops", "removed_rich_message", "removed_contact_ops"} {
 		if filter.IsAllowed(name) {
 			t.Errorf("master_direct profile 不应允许 %q", name)
 		}

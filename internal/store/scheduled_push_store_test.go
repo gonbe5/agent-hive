@@ -77,3 +77,67 @@ func TestPostgresStore_ScheduledPushCRUD(t *testing.T) {
 	_, err = pg.GetScheduledPush(ctx, rec.ID)
 	require.ErrorIs(t, err, store.ErrNotFound)
 }
+
+func TestPostgresStore_ScheduledTaskDeleteIncludesSessionTarget(t *testing.T) {
+	pg, cleanup := setupScheduledPushDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	rec := &store.ScheduledTask{
+		ID:          "task-pg-session-delete",
+		Name:        "session-delete",
+		TargetType:  "session",
+		Prompt:      "run",
+		IntervalSec: 60,
+		Timezone:    "UTC",
+		Enabled:     true,
+		CreatedBy:   "u1",
+	}
+	require.NoError(t, pg.SaveScheduledTask(ctx, rec))
+	require.NoError(t, pg.DeleteScheduledTask(ctx, rec.ID))
+	_, err := pg.GetScheduledTask(ctx, rec.ID)
+	require.ErrorIs(t, err, store.ErrNotFound)
+}
+
+func TestPostgresStore_ScheduledTaskSavePreservesRuntimeLease(t *testing.T) {
+	pg, cleanup := setupScheduledPushDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	leaseUntil := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+	lastRunAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	rec := &store.ScheduledTask{
+		ID:             "task-pg-lease",
+		Name:           "lease",
+		TargetType:     "session",
+		Prompt:         "run",
+		IntervalSec:    60,
+		Timezone:       "UTC",
+		Enabled:        true,
+		CreatedBy:      "u1",
+		ActiveRunID:    "run-1",
+		LeaseExpiresAt: &leaseUntil,
+		LastRunAt:      &lastRunAt,
+		LastError:      "running",
+	}
+	require.NoError(t, pg.SaveScheduledTask(ctx, rec))
+	require.NoError(t, pg.SaveScheduledTask(ctx, &store.ScheduledTask{
+		ID:          rec.ID,
+		Name:        "lease-updated",
+		TargetType:  "session",
+		Prompt:      "run updated",
+		IntervalSec: 60,
+		Timezone:    "UTC",
+		Enabled:     false,
+		CreatedBy:   "u1",
+	}))
+	got, err := pg.GetScheduledTask(ctx, rec.ID)
+	require.NoError(t, err)
+	require.Equal(t, "run-1", got.ActiveRunID)
+	require.NotNil(t, got.LeaseExpiresAt)
+	require.WithinDuration(t, leaseUntil, *got.LeaseExpiresAt, time.Second)
+	require.NotNil(t, got.LastRunAt)
+	require.WithinDuration(t, lastRunAt, *got.LastRunAt, time.Second)
+	require.Equal(t, "running", got.LastError)
+	require.False(t, got.Enabled)
+}

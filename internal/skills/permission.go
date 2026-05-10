@@ -635,9 +635,7 @@ func extractInputValue(toolName string, input json.RawMessage) string {
 		fieldNames = []string{"file_path"}
 	case "glob", "grep":
 		fieldNames = []string{"path", "pattern"}
-	case "memory", "taskboard", "feishu_api",
-		"send_im_message",
-		"wechat_send_rich_message", "wechat_contacts", "wechat_groups", "wechat_profile", "wechat_moments":
+	case "memory", "taskboard", "feishu_api", "send_im_message":
 		fieldNames = []string{"action", "operation"}
 	case "skill":
 		fieldNames = []string{"name"}

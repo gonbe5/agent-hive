@@ -52,7 +52,7 @@ func TestBuildRendererEnabledFn(t *testing.T) {
 		others := []channel.Platform{
 			channel.PlatformDingTalk,
 			channel.PlatformWeCom,
-			channel.PlatformWeChat,
+			channel.PlatformWeChatBot,
 		}
 		for _, p := range others {
 			if fn(p) {

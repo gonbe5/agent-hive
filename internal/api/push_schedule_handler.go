@@ -27,6 +27,7 @@ func (s *Server) handleCreatePushSchedule(w http.ResponseWriter, r *http.Request
 	if !s.canManagePushSchedules(w, r) {
 		return
 	}
+	w.Header().Set("Deprecation", "true")
 	scheduleStore, ok := s.store.(pushScheduleStore)
 	if !ok || scheduleStore == nil {
 		writeJSON(w, http.StatusServiceUnavailable, ErrorResponse{Error: "schedule store 未初始化", Code: http.StatusServiceUnavailable})
@@ -47,11 +48,6 @@ func (s *Server) handleCreatePushSchedule(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: err.Error(), Code: http.StatusInternalServerError})
 		return
 	}
-	if err := s.registerScheduledPush(rec); err != nil {
-		_ = scheduleStore.DeleteScheduledPush(r.Context(), rec.ID)
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: http.StatusBadRequest})
-		return
-	}
 
 	writeJSON(w, http.StatusCreated, rec)
 }
@@ -60,6 +56,7 @@ func (s *Server) handleListPushSchedules(w http.ResponseWriter, r *http.Request)
 	if !s.canManagePushSchedules(w, r) {
 		return
 	}
+	w.Header().Set("Deprecation", "true")
 	scheduleStore, ok := s.store.(pushScheduleStore)
 	if !ok || scheduleStore == nil {
 		writeJSON(w, http.StatusServiceUnavailable, ErrorResponse{Error: "schedule store 未初始化", Code: http.StatusServiceUnavailable})
@@ -77,6 +74,7 @@ func (s *Server) handleDeletePushSchedule(w http.ResponseWriter, r *http.Request
 	if !s.canManagePushSchedules(w, r) {
 		return
 	}
+	w.Header().Set("Deprecation", "true")
 	scheduleStore, ok := s.store.(pushScheduleStore)
 	if !ok || scheduleStore == nil {
 		writeJSON(w, http.StatusServiceUnavailable, ErrorResponse{Error: "schedule store 未初始化", Code: http.StatusServiceUnavailable})

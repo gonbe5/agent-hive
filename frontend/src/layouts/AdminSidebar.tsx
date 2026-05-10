@@ -1,6 +1,6 @@
 import { NavLink } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { LayoutDashboard, Bot, Zap, Settings, BookOpen, ArrowLeft, Users, BarChart2, ShieldCheck, FileText, BrainCircuit, FlaskConical, GitBranch, DatabaseZap, Sparkles, Network } from 'lucide-react';
+import { LayoutDashboard, Bot, Zap, Settings, BookOpen, ArrowLeft, Users, BarChart2, ShieldCheck, FileText, BrainCircuit, FlaskConical, GitBranch, DatabaseZap, Sparkles, Network, CalendarClock } from 'lucide-react';
 import { HiveLogo, NavItem } from './Sidebar';
 import { useWsStore } from '../store/ws';
 import { useAppStore } from '../store/app';
@@ -9,6 +9,7 @@ import { useAppStore } from '../store/app';
 const ADMIN_NAV = [
   { path: '/admin', label: 'nav.adminDashboard', icon: LayoutDashboard },
   { path: '/admin/agents', label: 'nav.adminAgents', icon: Bot },
+  { path: '/admin/scheduled-tasks', label: 'nav.adminScheduledTasks', icon: CalendarClock },
   { path: '/admin/skills', label: 'nav.adminSkills', icon: Zap },
   { path: '/admin/llm', label: 'nav.adminLLM', icon: BrainCircuit },
   { path: '/admin/users', label: 'nav.adminUsers', icon: Users },

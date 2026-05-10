@@ -63,6 +63,41 @@ func TestDefault(t *testing.T) {
 	if cfg.Logging.Format != "json" {
 		t.Errorf("Logging.Format = %q, want %q", cfg.Logging.Format, "json")
 	}
+	if cfg.Channel.WeChatBot.Enabled {
+		t.Error("Channel.WeChatBot.Enabled = true, want false by default")
+	}
+}
+
+func TestLoad_ChannelWechatbotFlag(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	raw := map[string]any{
+		"channel": map[string]any{
+			"enabled": true,
+			"wechatbot": map[string]any{
+				"enabled": true,
+			},
+		},
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if !cfg.Channel.Enabled {
+		t.Fatal("Channel.Enabled = false, want true")
+	}
+	if !cfg.Channel.WeChatBot.Enabled {
+		t.Fatal("Channel.WeChatBot.Enabled = false, want true")
+	}
 }
 
 func TestLoad_PlanRuntimeCanBeExplicitlyDisabled(t *testing.T) {

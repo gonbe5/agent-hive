@@ -125,13 +125,7 @@ var DefaultChannelConfig = ChannelConfig{
 			UserCacheTTLSec: int((12 * time.Hour) / time.Second),
 		},
 	},
-	WeChat: WeChatConfig{
-		WeChatPadPro: WeChatPadProInstanceConfig{
-			Enabled: false,
-			BaseURL: "http://localhost:8848",
-			Timeout: 30,
-		},
-	},
+	WeChatBot: WeChatBotConfig{Enabled: false},
 }
 
 // Gateway 默认值
@@ -206,7 +200,6 @@ func defaultPermissionRules() []skills.PermissionRule {
 		{ToolName: "create_tool", Action: skills.PermissionAsk},
 		{ToolName: "remove_tool", Action: skills.PermissionAsk},
 		{ToolName: "send_im_message", Action: skills.PermissionAsk},
-		{ToolName: "wechat_send_rich_message", Action: skills.PermissionAsk},
 	}
 	for _, rule := range router.ToolActionRiskRules() {
 		for _, action := range rule.Actions {
@@ -217,7 +210,6 @@ func defaultPermissionRules() []skills.PermissionRule {
 	rules = append(rules,
 		// 外部 MCP 工具默认需要审批（通配符匹配所有带前缀的工具）。
 		skills.PermissionRule{ToolName: "wenyan__preview_article", Action: skills.PermissionAllow}, // 预览是只读操作，自动放行
-		skills.PermissionRule{ToolName: "wechat_status", Action: skills.PermissionAllow},
 		skills.PermissionRule{ToolName: "wenyan__*", Action: skills.PermissionAsk},
 	)
 	return rules

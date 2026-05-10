@@ -90,7 +90,7 @@ type Server struct {
 	configPath                    string                      // 配置文件路径（用于保存配置）
 	channelRouter                 *channel.Router             // Channel 路由器（用于查询插件状态）
 	store                         store.Store                 // 统一存储（PG），用于模型/配置管理
-	reloadProtocolFunc            func(protocol string) error // 协议热加载回调
+	reloadProtocolFunc            func(protocol string) error // 通道热加载回调
 	authEngine                    *auth.Engine
 	costTracker                   accounting.CostTracker
 	promptStore                   promptStoreInterface  // Prompt CRUD 存储（可选）
@@ -227,6 +227,15 @@ func NewServer(
 			IdempotencyTTL:   fullCfg.Channel.Feishu.PushIdempotencyTTLResolved(),
 		}, logger)
 	}
+	if s.master != nil {
+		if s.pushService != nil {
+			s.master.SetScheduledPromptDispatcher(s.pushService.DispatchScheduledPrompt)
+			s.master.SetScheduledTaskPushService(s.pushService)
+		}
+		if authEngine != nil {
+			s.master.SetScheduledTaskUserResolver(authEngine)
+		}
+	}
 	s.feishuAuditSink = feishu.NewJSONLAuditSink("")
 	if fullCfg != nil {
 		s.feishuIngressMode = fullCfg.Channel.Feishu.ResolvedIngressMode()
@@ -292,7 +301,6 @@ func (s *Server) SetChannelRouter(r *channel.Router) {
 	))
 	s.mux.HandleFunc("GET /api/v1/channel/wecom/webhook", r.WebhookHandler(channel.PlatformWeCom))
 	s.mux.HandleFunc("POST /api/v1/channel/wecom/webhook", r.WebhookHandler(channel.PlatformWeCom))
-	s.mux.HandleFunc("POST /api/v1/channel/wechat/webhook", r.WebhookHandler(channel.PlatformWeChat))
 	s.logger.Info("IM Channel webhook 路由已注册")
 }
 
@@ -313,7 +321,7 @@ func (s *Server) SetWSPingInterval(d time.Duration) {
 	}
 }
 
-// SetReloadProtocolFunc 设置协议热加载回调函数
+// SetReloadProtocolFunc 设置通道热加载回调函数
 func (s *Server) SetReloadProtocolFunc(fn func(protocol string) error) {
 	s.reloadProtocolFunc = fn
 }
@@ -340,6 +348,10 @@ func (s *Server) SetAIRouter(r *airouter.Router) {
 
 func (s *Server) SetPushService(service *push.Service) {
 	s.pushService = service
+	if s.master != nil && service != nil {
+		s.master.SetScheduledPromptDispatcher(service.DispatchScheduledPrompt)
+		s.master.SetScheduledTaskPushService(service)
+	}
 }
 
 func (s *Server) SetFeishuAuditSink(sink feishu.AuditSink) {

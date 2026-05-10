@@ -39,6 +39,15 @@
     "tokens": []
   },
 
+  "channel": {
+    "_comment": "IM 通道启动配置。运行时通道配置会迁移到数据库；个人微信只保留官方 wechatbot 全局开关。",
+    "enabled": false,
+    "wechatbot": {
+      "_comment": "官方 wechatbot 个人微信入口。false 时隐藏用户扫码入口并停止已运行实例。",
+      "enabled": false
+    }
+  },
+
   "store": {
     "_comment": "存储后端配置。运行时配置存储在此数据库中，首次启动自动写入默认值",
     "_comment_type": "存储类型: postgres（唯一支持的后端）",

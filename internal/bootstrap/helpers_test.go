@@ -86,6 +86,76 @@ func TestLoadAllConfigFromDB_PlanRuntimeEnabledDefaultsTrueAndCanBeDisabled(t *t
 	}
 }
 
+type channelConfigMemoryStore struct {
+	store.Store
+	records []*store.ChannelConfigRecord
+}
+
+func (s *channelConfigMemoryStore) ListChannelConfigs(context.Context) ([]*store.ChannelConfigRecord, error) {
+	out := make([]*store.ChannelConfigRecord, len(s.records))
+	for i, rec := range s.records {
+		cp := *rec
+		out[i] = &cp
+	}
+	return out, nil
+}
+
+func (s *channelConfigMemoryStore) ListMCPServers(context.Context) ([]*store.MCPServerRecord, error) {
+	return nil, nil
+}
+
+func (s *channelConfigMemoryStore) SaveChannelConfig(_ context.Context, rec *store.ChannelConfigRecord) error {
+	cp := *rec
+	s.records = append(s.records, &cp)
+	return nil
+}
+
+func TestMigrateConfigToDB_IncludesWechatbotOfficialFlag(t *testing.T) {
+	cfg := config.Default()
+	cfg.Channel.WeChatBot.Enabled = true
+	db := &channelConfigMemoryStore{}
+
+	MigrateConfigToDB(db, cfg, zap.NewNop())
+
+	var found *store.ChannelConfigRecord
+	for _, rec := range db.records {
+		if rec.Platform == "wechatbot" {
+			found = rec
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("expected wechatbot channel config to be migrated")
+	}
+	if !found.Enabled {
+		t.Fatal("wechatbot channel config Enabled = false, want true")
+	}
+	var decoded config.WeChatBotConfig
+	if err := json.Unmarshal([]byte(found.ConfigJSON), &decoded); err != nil {
+		t.Fatalf("wechatbot config JSON invalid: %v", err)
+	}
+	if !decoded.Enabled {
+		t.Fatal("decoded wechatbot config Enabled = false, want true")
+	}
+}
+
+func TestLoadChannelConfigsFromDB_LoadsWechatbotOfficialFlag(t *testing.T) {
+	cfg := config.Default()
+	db := &channelConfigMemoryStore{
+		records: []*store.ChannelConfigRecord{{
+			Platform:   "wechatbot",
+			Enabled:    true,
+			ConfigJSON: `{"enabled":true}`,
+		}},
+	}
+
+	LoadChannelConfigsFromDB(db, cfg, zap.NewNop())
+
+	if !cfg.Channel.WeChatBot.Enabled {
+		t.Fatal("Channel.WeChatBot.Enabled = false, want true")
+	}
+}
+
 func TestBuildLLMExtraConfig_AllFields(t *testing.T) {
 	cfg := &config.Config{
 		LLM: config.LLMConfig{
@@ -315,6 +385,52 @@ func TestRestoreFeishuPushSchedules_LoadsEnabledJobsIntoMaster(t *testing.T) {
 	}
 	if got.NextRunAt.IsZero() {
 		t.Fatal("expected restored schedule to persist next_run_at")
+	}
+}
+
+func TestValidateScheduledTaskReloadsDisablesOnlyBadTask(t *testing.T) {
+	ctx := context.Background()
+	appStore := store.NewMemoryStore()
+	if err := appStore.SaveScheduledTask(ctx, &store.ScheduledTask{
+		ID:         "task-good-reload",
+		Name:       "good",
+		TargetType: "session",
+		Prompt:     "run",
+		CronExpr:   "0 9 * * *",
+		Timezone:   "Asia/Shanghai",
+		Enabled:    true,
+		CreatedBy:  "u1",
+	}); err != nil {
+		t.Fatalf("SaveScheduledTask good: %v", err)
+	}
+	if err := appStore.SaveScheduledTask(ctx, &store.ScheduledTask{
+		ID:         "task-bad-reload",
+		Name:       "bad",
+		TargetType: "session",
+		Prompt:     "run",
+		CronExpr:   "bad cron",
+		Timezone:   "UTC",
+		Enabled:    true,
+		CreatedBy:  "u1",
+	}); err != nil {
+		t.Fatalf("SaveScheduledTask bad: %v", err)
+	}
+	m := master.NewForRegressionTest(zap.NewNop(), nil)
+	validateScheduledTaskReloads(ctx, m, appStore, zap.NewNop())
+
+	bad, err := appStore.GetScheduledTask(ctx, "task-bad-reload")
+	if err != nil {
+		t.Fatalf("GetScheduledTask bad: %v", err)
+	}
+	if bad.Enabled || bad.LastError == "" {
+		t.Fatalf("bad task should be disabled with last_error: %+v", bad)
+	}
+	good, err := appStore.GetScheduledTask(ctx, "task-good-reload")
+	if err != nil {
+		t.Fatalf("GetScheduledTask good: %v", err)
+	}
+	if !good.Enabled || good.LastError != "" {
+		t.Fatalf("good task should remain enabled: %+v", good)
 	}
 }
 
@@ -1218,13 +1334,6 @@ func TestBuildReloadMCPFunc_NilHost(t *testing.T) {
 	fn := BuildReloadMCPFunc(nil, nil, nil, nil, nil, nil)
 	if fn != nil {
 		t.Error("expected nil func when host is nil")
-	}
-}
-
-func TestBuildReloadProtocolFunc_NilRouter(t *testing.T) {
-	fn := BuildReloadProtocolFunc(nil, nil, nil, nil)
-	if fn != nil {
-		t.Error("expected nil func when router is nil")
 	}
 }
 

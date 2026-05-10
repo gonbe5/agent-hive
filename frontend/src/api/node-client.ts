@@ -11,8 +11,6 @@ import type {
   Message,
   MessagesListResponse,
   SessionTraceResponse,
-  WeChatConfigResponse,
-  UpdateWeChatProtocolRequest,
   FileAttachment,
   RemoteAgentConfig,
   RemoteAgentHealth,
@@ -83,6 +81,9 @@ import type {
   PromptSmokeEvalRequest,
   PromptSmokeEvalResponse,
   UsageQualityCost,
+  ScheduledTask,
+  ScheduledTaskRun,
+  ScheduledTaskUpsertRequest,
 } from '../types/api';
 import type { JournalResponse, JournalStatsResponse } from '../types/journal';
 import type { TodoResumeResponse, TodoSnapshot } from '../store/todos';
@@ -114,11 +115,7 @@ export interface NodeClient {
   listAgents(): Promise<AgentInfo[]>;
   listSkills(): Promise<SkillMetadata[]>;
   health(): Promise<Health>;
-  // 微信配置
-  getWeChatConfig(): Promise<WeChatConfigResponse>;
-  updateWeChatProtocol(protocol: string, req: UpdateWeChatProtocolRequest): Promise<{ success: boolean; message: string }>;
   saveConfig(): Promise<{ success: boolean; message: string; path: string }>;
-  reloadWeChatProtocol(protocol: string): Promise<{ success: boolean; message: string; status: string }>;
   // Model
   listModels(): Promise<{ models: ModelInfo[]; active: string }>;
   switchModel(name: string): Promise<void>;
@@ -144,6 +141,15 @@ export interface NodeClient {
   // 收藏 & 标签
   starSession(id: string, starred: boolean): Promise<void>;
   updateSessionTags(id: string, tags: string[]): Promise<void>;
+  // 定时任务
+  listScheduledTasks(): Promise<ScheduledTask[]>;
+  createScheduledTask(body: ScheduledTaskUpsertRequest): Promise<ScheduledTask>;
+  getScheduledTask(id: string): Promise<ScheduledTask>;
+  updateScheduledTask(id: string, body: ScheduledTaskUpsertRequest): Promise<ScheduledTask>;
+  deleteScheduledTask(id: string): Promise<void>;
+  toggleScheduledTask(id: string, enabled: boolean): Promise<ScheduledTask>;
+  runScheduledTaskNow(id: string): Promise<ScheduledTaskRun>;
+  listScheduledTaskRuns(id: string, limit?: number): Promise<ScheduledTaskRun[]>;
   // Admin 用户管理
   adminListUsers(query?: string, page?: number, size?: number): Promise<AdminUsersResponse>;
   adminUpdateUser(id: string, body: { role?: string; status?: string }): Promise<void>;
@@ -155,6 +161,7 @@ export interface NodeClient {
   adminCreateProvider(body: Partial<AdminProvider> & { name: string; provider_type: string }): Promise<void>;
   adminUpdateProvider(name: string, body: Partial<AdminProvider>): Promise<void>;
   adminDeleteProvider(name: string): Promise<void>;
+  adminListScheduledTasks(): Promise<ScheduledTask[]>;
   // Journal（回放剧场）
   getSessionJournal(sessionId: string, limit?: number): Promise<JournalResponse>;
   getJournalStats(sessionIds: string[]): Promise<JournalStatsResponse>;
@@ -333,20 +340,8 @@ export class LocalNodeClient implements NodeClient {
     return this.client.get('/api/v1/health');
   }
 
-  getWeChatConfig(): Promise<WeChatConfigResponse> {
-    return this.client.get('/api/v1/config/channels/wechat');
-  }
-
-  updateWeChatProtocol(protocol: string, req: UpdateWeChatProtocolRequest): Promise<{ success: boolean; message: string }> {
-    return this.client.patch(`/api/v1/config/channels/wechat/${protocol}`, req);
-  }
-
   saveConfig(): Promise<{ success: boolean; message: string; path: string }> {
     return this.client.post('/api/v1/config/save');
-  }
-
-  reloadWeChatProtocol(protocol: string): Promise<{ success: boolean; message: string; status: string }> {
-    return this.client.post(`/api/v1/config/channels/wechat/${protocol}/reload`);
   }
 
   // Model
@@ -440,6 +435,39 @@ export class LocalNodeClient implements NodeClient {
     return this.client.patch(`/api/v1/sessions/${id}/tags`, { tags });
   }
 
+  listScheduledTasks(): Promise<ScheduledTask[]> {
+    return this.client.get('/api/v1/scheduled-tasks');
+  }
+
+  createScheduledTask(body: ScheduledTaskUpsertRequest): Promise<ScheduledTask> {
+    return this.client.post('/api/v1/scheduled-tasks', body);
+  }
+
+  getScheduledTask(id: string): Promise<ScheduledTask> {
+    return this.client.get(`/api/v1/scheduled-tasks/${encodeURIComponent(id)}`);
+  }
+
+  updateScheduledTask(id: string, body: ScheduledTaskUpsertRequest): Promise<ScheduledTask> {
+    return this.client.put(`/api/v1/scheduled-tasks/${encodeURIComponent(id)}`, body);
+  }
+
+  deleteScheduledTask(id: string): Promise<void> {
+    return this.client.delete(`/api/v1/scheduled-tasks/${encodeURIComponent(id)}`);
+  }
+
+  toggleScheduledTask(id: string, enabled: boolean): Promise<ScheduledTask> {
+    return this.client.post(`/api/v1/scheduled-tasks/${encodeURIComponent(id)}/toggle`, { enabled });
+  }
+
+  runScheduledTaskNow(id: string): Promise<ScheduledTaskRun> {
+    return this.client.post(`/api/v1/scheduled-tasks/${encodeURIComponent(id)}/run-now`);
+  }
+
+  listScheduledTaskRuns(id: string, limit = 20): Promise<ScheduledTaskRun[]> {
+    const params = new URLSearchParams({ limit: String(limit) });
+    return this.client.get(`/api/v1/scheduled-tasks/${encodeURIComponent(id)}/runs?${params}`);
+  }
+
   // Admin 用户管理
   async adminListUsers(query = '', page = 1, size = 20): Promise<AdminUsersResponse> {
     const params = new URLSearchParams({ page: String(page), size: String(size) });
@@ -482,6 +510,10 @@ export class LocalNodeClient implements NodeClient {
 
   adminDeleteProvider(name: string): Promise<void> {
     return this.client.delete(`/api/v1/admin/auth/providers/${name}`);
+  }
+
+  adminListScheduledTasks(): Promise<ScheduledTask[]> {
+    return this.client.get('/api/v1/admin/scheduled-tasks');
   }
 
   // Journal（回放剧场）

@@ -7,12 +7,10 @@ import "time"
 type Platform string
 
 const (
-	PlatformDingTalk          Platform = "dingtalk"
-	PlatformFeishu            Platform = "feishu"
-	PlatformWeCom             Platform = "wecom"
-	PlatformWeChat            Platform = "wechat"
-	PlatformWeChatWechaty     Platform = "wechat-wechaty"
-	PlatformWeChatPadPro      Platform = "wechat-wechatpadpro"
+	PlatformDingTalk  Platform = "dingtalk"
+	PlatformFeishu    Platform = "feishu"
+	PlatformWeCom     Platform = "wecom"
+	PlatformWeChatBot Platform = "wechatbot"
 )
 
 // IMMessageContext 是从 IM 通道流向 master 的中立消息元数据。
@@ -33,12 +31,12 @@ type IMMessageContext struct {
 	TraceID          string    `json:"trace_id,omitempty"` // 跨 channel/master 串联日志/metric
 
 	// M1 消息摄取扩展字段（零值兼容非飞书平台）
-	References      []DocRef  `json:"references,omitempty"`       // 消息中引用的文档资源
-	ParentMessageID string    `json:"parent_message_id,omitempty"` // 回复的父消息 ID
-	ParentContent   string    `json:"parent_content,omitempty"`    // 父消息正文（Resolver 填充）
-	Mentions        []Mention `json:"mentions,omitempty"`          // @ 的用户列表
-	BotMentioned    bool      `json:"bot_mentioned,omitempty"`     // 是否 @ 了机器人
-	SystemPromptPrefix string `json:"system_prompt_prefix,omitempty"` // Resolver 构造的 prompt 前缀
+	References         []DocRef  `json:"references,omitempty"`           // 消息中引用的文档资源
+	ParentMessageID    string    `json:"parent_message_id,omitempty"`    // 回复的父消息 ID
+	ParentContent      string    `json:"parent_content,omitempty"`       // 父消息正文（Resolver 填充）
+	Mentions           []Mention `json:"mentions,omitempty"`             // @ 的用户列表
+	BotMentioned       bool      `json:"bot_mentioned,omitempty"`        // 是否 @ 了机器人
+	SystemPromptPrefix string    `json:"system_prompt_prefix,omitempty"` // Resolver 构造的 prompt 前缀
 }
 
 // SessionID 在 imctx 之外按 BuildSessionID(tenantKey, chatID) 构造，

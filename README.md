@@ -275,7 +275,8 @@ http://localhost:8080/api/v1
 - [Agent System Prompt 重整方案](docs/计划与路线/归档/Agent-System-Prompt重整方案.md)
 - [Agent 定时任务系统方案](docs/计划与路线/Agent-定时任务系统方案.md)
 - [Agent 记忆反馈闭环与治理计划](docs/计划与路线/归档/Agent-记忆反馈闭环与治理计划.md)
-- [多业务平台化计划](docs/计划与路线/多业务平台化计划.md)
+- [Run 质量治理与业务域平台地基计划](docs/计划与路线/Run质量治理与业务域平台地基计划.md)
+- [客服业务域接入试点计划](docs/计划与路线/客服业务域接入试点计划.md)
 
 **Channel**
 

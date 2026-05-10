@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
@@ -103,19 +104,92 @@ CREATE TABLE IF NOT EXISTS channel_configs (
 CREATE TABLE IF NOT EXISTS scheduled_pushes (
 	id           TEXT PRIMARY KEY,
 	name         TEXT NOT NULL,
+	description  TEXT NOT NULL DEFAULT '',
 	platform     TEXT NOT NULL,
 	prompt       TEXT NOT NULL,
+	target_type  TEXT NOT NULL DEFAULT 'im_push',
+	target_config JSONB NOT NULL DEFAULT '{}'::jsonb,
+	cron_expr    TEXT NOT NULL DEFAULT '',
 	interval_sec INTEGER NOT NULL,
+	timezone     TEXT NOT NULL DEFAULT 'UTC',
 	enabled      BOOLEAN NOT NULL DEFAULT TRUE,
 	created_by   TEXT NOT NULL DEFAULT '',
 	last_run_at  TIMESTAMPTZ,
 	next_run_at  TIMESTAMPTZ,
 	last_error   TEXT NOT NULL DEFAULT '',
+	active_run_id TEXT NOT NULL DEFAULT '',
+	lease_expires_at TIMESTAMPTZ,
 	created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-	updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	CONSTRAINT scheduled_pushes_target_type_check CHECK (target_type IN ('im_push', 'session')),
+	CONSTRAINT scheduled_pushes_schedule_check CHECK (
+		(cron_expr <> '' AND interval_sec = 0)
+		OR
+		(cron_expr = '' AND interval_sec > 0)
+	)
 );
 
+ALTER TABLE scheduled_pushes
+	ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '',
+	ADD COLUMN IF NOT EXISTS target_type TEXT NOT NULL DEFAULT 'im_push',
+	ADD COLUMN IF NOT EXISTS target_config JSONB NOT NULL DEFAULT '{}'::jsonb,
+	ADD COLUMN IF NOT EXISTS cron_expr TEXT NOT NULL DEFAULT '',
+	ADD COLUMN IF NOT EXISTS timezone TEXT NOT NULL DEFAULT 'UTC',
+	ADD COLUMN IF NOT EXISTS active_run_id TEXT NOT NULL DEFAULT '',
+	ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ;
+
+DO $$
+BEGIN
+	IF NOT EXISTS (
+		SELECT 1
+		FROM pg_constraint
+		WHERE conname = 'scheduled_pushes_target_type_check'
+		  AND conrelid = 'scheduled_pushes'::regclass
+	) THEN
+		ALTER TABLE scheduled_pushes
+			ADD CONSTRAINT scheduled_pushes_target_type_check
+			CHECK (target_type IN ('im_push', 'session'));
+	END IF;
+
+	IF NOT EXISTS (
+		SELECT 1
+		FROM pg_constraint
+		WHERE conname = 'scheduled_pushes_schedule_check'
+		  AND conrelid = 'scheduled_pushes'::regclass
+	) THEN
+		ALTER TABLE scheduled_pushes
+			ADD CONSTRAINT scheduled_pushes_schedule_check
+			CHECK (
+				(cron_expr <> '' AND interval_sec = 0)
+				OR
+				(cron_expr = '' AND interval_sec > 0)
+			);
+	END IF;
+END $$;
+
+COMMENT ON COLUMN scheduled_pushes.last_error IS
+	'最近一次 run 的最终错误,仅用于 UI 展示,不驱动调度逻辑';
+
 CREATE INDEX IF NOT EXISTS idx_scheduled_pushes_platform ON scheduled_pushes(platform, enabled, created_at);
+CREATE INDEX IF NOT EXISTS idx_scheduled_pushes_user_enabled ON scheduled_pushes(created_by, enabled, next_run_at);
+
+-- Agent 定时任务运行历史父表。分区由 EnsureScheduledTaskRunPartition 按周创建。
+CREATE TABLE IF NOT EXISTS scheduled_task_runs (
+	scheduled_at     TIMESTAMPTZ NOT NULL,
+	id               TEXT NOT NULL,
+	task_id          TEXT NOT NULL REFERENCES scheduled_pushes(id) ON DELETE CASCADE,
+	started_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	finished_at      TIMESTAMPTZ,
+	status           TEXT NOT NULL CHECK (status IN ('running','succeeded','failed','timeout','skipped')),
+	attempt_count    INTEGER NOT NULL DEFAULT 0,
+	output           TEXT NOT NULL DEFAULT '',
+	error            TEXT NOT NULL DEFAULT '',
+	session_id       TEXT NOT NULL DEFAULT '',
+	claimed_by       TEXT NOT NULL DEFAULT '',
+	claim_expires_at TIMESTAMPTZ,
+	PRIMARY KEY (scheduled_at, id),
+	UNIQUE (scheduled_at, task_id)
+) PARTITION BY RANGE (scheduled_at);
 
 -- MCP 服务端配置表
 CREATE TABLE IF NOT EXISTS mcp_servers (
@@ -629,6 +703,46 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_users_external_provider
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
 CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
 
+-- 用户外部身份绑定表（wechatbot 等非登录 provider 的用户级账号绑定）。
+CREATE TABLE IF NOT EXISTS user_external_ids (
+    id            BIGSERIAL PRIMARY KEY,
+    user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider_type TEXT NOT NULL,
+    external_id   TEXT NOT NULL,
+    display_name  TEXT NOT NULL DEFAULT '',
+    avatar_url    TEXT NOT NULL DEFAULT '',
+    metadata      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (provider_type, external_id),
+    UNIQUE (user_id, provider_type)
+);
+CREATE INDEX IF NOT EXISTS idx_user_external_ids_user_provider
+    ON user_external_ids(user_id, provider_type);
+
+-- 微信个人 Agent 会话映射表。
+CREATE TABLE IF NOT EXISTS wechat_conversations (
+    id                   BIGSERIAL PRIMARY KEY,
+    owner_user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    owner_account_id     TEXT NOT NULL,
+    peer_wxid            TEXT NOT NULL,
+    session_id           TEXT NOT NULL,
+    peer_nickname        TEXT NOT NULL DEFAULT '',
+    peer_avatar_url      TEXT NOT NULL DEFAULT '',
+    chat_type            TEXT NOT NULL DEFAULT 'direct',
+    last_message_preview TEXT NOT NULL DEFAULT '',
+    last_message_at      TIMESTAMPTZ,
+    can_send             BOOLEAN NOT NULL DEFAULT FALSE,
+    send_state           TEXT NOT NULL DEFAULT 'unknown',
+    metadata             JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (owner_user_id, peer_wxid),
+    UNIQUE (session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_wechat_conversations_owner_last
+    ON wechat_conversations(owner_user_id, last_message_at DESC NULLS LAST);
+
 -- 登录历史表
 CREATE TABLE IF NOT EXISTS login_history (
     id            BIGSERIAL PRIMARY KEY,
@@ -715,6 +829,8 @@ CREATE INDEX IF NOT EXISTS idx_feishu_chat_state_suppressed_lookup
     WHERE suppress_outbound = TRUE OR mute_until IS NOT NULL;
 `
 
+const pgScheduledTaskUniqueNameIndexSQL = `CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduled_pushes_user_name ON scheduled_pushes(created_by, name)`
+
 // pgFixTextToTimestamptz 修复旧版数据库中 TEXT 时间列 → TIMESTAMPTZ 的迁移 SQL
 // 使用 information_schema 判断列类型，仅在列为 text 时执行 ALTER，确保幂等
 const pgFixTextToTimestamptz = `
@@ -779,7 +895,7 @@ INSERT INTO configs (key, value) VALUES
   ('hitl.websocket_enabled',         'false'),
   ('hitl.websocket_insecure_origin', 'false'),
   ('hitl.websocket_max_conn_per_ip', '5'),
-  ('hitl.permission_rules',          '[{"tool_name":"read_file","action":"allow"},{"tool_name":"glob","action":"allow"},{"tool_name":"grep","action":"allow"},{"tool_name":"ls","action":"allow"},{"tool_name":"websearch","action":"allow"},{"tool_name":"webfetch","action":"allow"},{"tool_name":"browser_interact","action":"allow"},{"tool_name":"memory","action":"allow"},{"tool_name":"skill","action":"allow"},{"tool_name":"task","action":"allow"},{"tool_name":"question","action":"allow"},{"tool_name":"batch","action":"allow"},{"tool_name":"write_file","action":"ask"},{"tool_name":"edit","action":"ask"},{"tool_name":"bash","action":"ask"},{"tool_name":"multiedit","action":"ask"},{"tool_name":"apply_patch","action":"ask"},{"tool_name":"taskboard","action":"ask"},{"tool_name":"create_tool","action":"ask"},{"tool_name":"remove_tool","action":"ask"},{"tool_name":"spawn_agent","action":"ask"},{"tool_name":"parallel_dispatch","action":"ask"},{"tool_name":"send_im_message","action":"ask"},{"tool_name":"feishu_api","action":"ask"},{"tool_name":"wechat_send_rich_message","action":"ask"},{"tool_name":"wechat_contacts","action":"ask"},{"tool_name":"wechat_groups","action":"ask"},{"tool_name":"wechat_profile","action":"ask"},{"tool_name":"wechat_moments","action":"ask"},{"tool_name":"wechat_status","action":"ask"}]'),
+  ('hitl.permission_rules',          '[{"tool_name":"read_file","action":"allow"},{"tool_name":"glob","action":"allow"},{"tool_name":"grep","action":"allow"},{"tool_name":"ls","action":"allow"},{"tool_name":"websearch","action":"allow"},{"tool_name":"webfetch","action":"allow"},{"tool_name":"browser_interact","action":"allow"},{"tool_name":"memory","action":"allow"},{"tool_name":"skill","action":"allow"},{"tool_name":"task","action":"allow"},{"tool_name":"question","action":"allow"},{"tool_name":"batch","action":"allow"},{"tool_name":"write_file","action":"ask"},{"tool_name":"edit","action":"ask"},{"tool_name":"bash","action":"ask"},{"tool_name":"multiedit","action":"ask"},{"tool_name":"apply_patch","action":"ask"},{"tool_name":"taskboard","action":"ask"},{"tool_name":"create_tool","action":"ask"},{"tool_name":"remove_tool","action":"ask"},{"tool_name":"spawn_agent","action":"ask"},{"tool_name":"parallel_dispatch","action":"ask"},{"tool_name":"send_im_message","action":"ask"},{"tool_name":"feishu_api","action":"ask"}]'),
   -- Agent
   ('agent.timeout',               '10m'),
   ('agent.max_concurrent_agents', '10'),
@@ -1222,6 +1338,9 @@ func pgMigrate(ctx context.Context, pool *pgxpool.Pool, logger *zap.Logger) erro
 	if _, err := pool.Exec(ctx, pgInitSQL); err != nil {
 		return errs.Wrap(errs.CodeStoreError, "PostgreSQL 建表失败", err)
 	}
+	if err := pgEnsureScheduledTaskUniqueNameIndex(ctx, pool); err != nil {
+		return err
+	}
 
 	// 修复旧版数据库中 TEXT 时间列 → TIMESTAMPTZ
 	if _, err := pool.Exec(ctx, pgFixTextToTimestamptz); err != nil {
@@ -1371,6 +1490,38 @@ func pgMigrate(ctx context.Context, pool *pgxpool.Pool, logger *zap.Logger) erro
 	}
 
 	logger.Info("PostgreSQL 数据库初始化完成")
+	return nil
+}
+
+func pgEnsureScheduledTaskUniqueNameIndex(ctx context.Context, pool *pgxpool.Pool) error {
+	rows, err := pool.Query(ctx, `
+		SELECT created_by, name, COUNT(*)
+		FROM scheduled_pushes
+		GROUP BY created_by, name
+		HAVING COUNT(*) > 1`)
+	if err != nil {
+		return errs.Wrap(errs.CodeStoreError, "检查定时任务名称唯一性失败", err)
+	}
+	defer rows.Close()
+
+	var duplicates []string
+	for rows.Next() {
+		var createdBy, name string
+		var count int
+		if err := rows.Scan(&createdBy, &name, &count); err != nil {
+			return errs.Wrap(errs.CodeStoreError, "扫描重复定时任务名称失败", err)
+		}
+		duplicates = append(duplicates, fmt.Sprintf("created_by=%q name=%q count=%d", createdBy, name, count))
+	}
+	if err := rows.Err(); err != nil {
+		return errs.Wrap(errs.CodeStoreError, "读取重复定时任务名称失败", err)
+	}
+	if len(duplicates) > 0 {
+		return errs.New(errs.CodeStoreError, "scheduled_pushes 存在重复(created_by,name),请人工清理后重启: "+strings.Join(duplicates, "; "))
+	}
+	if _, err := pool.Exec(ctx, pgScheduledTaskUniqueNameIndexSQL); err != nil {
+		return errs.Wrap(errs.CodeStoreError, "创建定时任务名称唯一索引失败", err)
+	}
 	return nil
 }
 

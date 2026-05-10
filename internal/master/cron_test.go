@@ -2,6 +2,7 @@ package master
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,6 +33,37 @@ func TestCronCreate_ExecutesScheduledCallback(t *testing.T) {
 	time.Sleep(70 * time.Millisecond)
 	if calls.Load() < 2 {
 		t.Fatalf("calls = %d, want >= 2", calls.Load())
+	}
+}
+
+func TestValidateScheduleSpec_RejectsHighFrequencyForUser(t *testing.T) {
+	err := ValidateScheduleSpec(ScheduleSpec{Interval: 30 * time.Second, Timezone: "UTC"}, ScheduledTaskDefaultMinInterval)
+	if err == nil || !strings.Contains(err.Error(), "at least") {
+		t.Fatalf("ValidateScheduleSpec error = %v, want min interval error", err)
+	}
+}
+
+func TestValidateScheduleSpec_AllowsCronWithTimezone(t *testing.T) {
+	err := ValidateScheduleSpec(ScheduleSpec{CronExpr: "0 9 * * *", Timezone: "Asia/Shanghai"}, ScheduledTaskDefaultMinInterval)
+	if err != nil {
+		t.Fatalf("ValidateScheduleSpec cron error = %v", err)
+	}
+	next, err := NextScheduledRun(ScheduleSpec{CronExpr: "0 9 * * *", Timezone: "Asia/Shanghai"}, time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("NextScheduledRun error = %v", err)
+	}
+	want := time.Date(2026, 5, 10, 1, 0, 0, 0, time.UTC)
+	if !next.Equal(want) {
+		t.Fatalf("next = %v, want %v", next, want)
+	}
+}
+
+func TestValidateScheduleSpec_RejectsInvalidCronAndTimezone(t *testing.T) {
+	if err := ValidateScheduleSpec(ScheduleSpec{CronExpr: "bad", Timezone: "UTC"}, ScheduledTaskDefaultMinInterval); err == nil {
+		t.Fatal("expected invalid cron error")
+	}
+	if err := ValidateScheduleSpec(ScheduleSpec{CronExpr: "0 9 * * *", Timezone: "No/SuchZone"}, ScheduledTaskDefaultMinInterval); err == nil {
+		t.Fatal("expected invalid timezone error")
 	}
 }
 

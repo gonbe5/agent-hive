@@ -77,7 +77,7 @@ func TestBuiltinCapabilityRegistryCoversCommonHostToolNames(t *testing.T) {
 		"browser_interact",
 		"todo_write",
 		"taskboard",
-		"wechat_send_rich_message",
+		"send_im_message",
 		"lsp_diagnostics",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -137,8 +137,6 @@ func TestCapabilityRegistryStructuredDangerousOperations(t *testing.T) {
 	}{
 		{name: "feishu send", tool: "feishu_api", input: `{"action":"send_message"}`, wantRisk: true},
 		{name: "feishu read", tool: "feishu_api", input: `{"action":"get_user"}`, wantRisk: false},
-		{name: "wechat read", tool: "wechat_contacts", input: `{"action":"list"}`, wantRisk: false},
-		{name: "wechat delete", tool: "wechat_contacts", input: `{"action":"delete"}`, wantRisk: true},
 		{name: "send im", tool: "send_im_message", input: `{"platform":"feishu"}`, wantRisk: true},
 		{name: "create tool", tool: "create_tool", input: `{}`, wantRisk: true},
 	}

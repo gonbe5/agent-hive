@@ -128,6 +128,29 @@ func (s *Service) DispatchScheduledPrompt(ctx context.Context, prompt string) er
 	return s.Push(ctx, req)
 }
 
+func (s *Service) DispatchScheduledConfig(ctx context.Context, platform string, targetConfig map[string]any, prompt string) error {
+	req := Request{
+		Platform:       channel.Platform(stringFromAny(targetConfig["platform"])),
+		ChatID:         stringFromAny(targetConfig["chat_id"]),
+		OpenID:         stringFromAny(targetConfig["open_id"]),
+		MsgType:        channel.MsgType(stringFromAny(targetConfig["msg_type"])),
+		Content:        stringFromAny(targetConfig["content"]),
+		Template:       stringFromAny(targetConfig["template"]),
+		Vars:           mapFromAny(targetConfig["vars"]),
+		IdempotencyKey: stringFromAny(targetConfig["idempotency_key"]),
+	}
+	if req.Platform == "" {
+		req.Platform = channel.Platform(platform)
+	}
+	if req.Platform == "" {
+		req.Platform = channel.PlatformFeishu
+	}
+	if req.Content == "" && req.Template == "" {
+		req.Content = prompt
+	}
+	return s.Push(ctx, req)
+}
+
 func (s *Service) resolveContent(req Request) (channel.MsgType, string, error) {
 	if req.Template != "" {
 		msgType, rendered, err := renderBuiltInTemplate(req.Template, req.Vars)
@@ -248,6 +271,24 @@ func (s *Service) enqueueRetry(req Request, chatID string, cause error) {
 		Payload:   payload,
 	}); err != nil {
 		s.logger.Error("push enqueue retry failed", zap.Error(err))
+	}
+}
+
+func stringFromAny(v any) string {
+	switch value := v.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	default:
+		return ""
+	}
+}
+
+func mapFromAny(v any) map[string]any {
+	switch value := v.(type) {
+	case map[string]any:
+		return value
+	default:
+		return nil
 	}
 }
 

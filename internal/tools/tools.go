@@ -322,11 +322,7 @@ func RegisterBuiltinTools(host *mcphost.Host, logger *zap.Logger, cfg *config.Co
 		}
 	}
 
-	// 如果提供了 wechatOpsProvider，注册微信操作工具
-	if wechatOpsI != nil {
-		n := RegisterWechatOpsTools(host, logger, wechatOpsI)
-		count += n
-	}
+	_ = wechatOpsI // 旧微信操作工具已下线，保留参数避免破坏调用方签名。
 
 	// 如果提供了 memoryStore，注册 memory 工具
 	if memStore != nil {

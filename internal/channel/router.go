@@ -25,6 +25,17 @@ import (
 // 红队提醒：长期依赖 default 兜底 → 不同租户 session 串台 → 跨租户消息泄露。
 const defaultTenantKey = "default"
 
+func normalizeBindingTenantKey(tenantKey string) string {
+	if tenantKey == "" {
+		return defaultTenantKey
+	}
+	return tenantKey
+}
+
+func bindingKey(platform Platform, tenantKey, chatID string) string {
+	return string(platform) + ":" + normalizeBindingTenantKey(tenantKey) + ":" + chatID
+}
+
 type imContextKey struct{}
 
 type IMContextValue struct {
@@ -187,7 +198,7 @@ func (r *Router) checkDedupFailClosed(parentCtx context.Context, messageID strin
 // Router 消息路由器，管理 IM 插件和消息绑定
 type Router struct {
 	plugins   map[Platform]ChannelPlugin
-	bindings  map[string]string // "platform:chatID" → sessionID
+	bindings  map[string]string // "platform:tenantKey:chatID" → sessionID
 	processor MessageProcessor
 	dedup     *messageDedup
 	debouncer *messageBatcher
@@ -196,6 +207,8 @@ type Router struct {
 	// enrichCtx: 根据 IM sender 信息丰富 context（注入 user）
 	// 返回 enriched ctx；找不到用户时返回原 ctx
 	enrichCtx func(ctx context.Context, externalID, provider string) context.Context
+	// ownerUserResolver: 根据 user-scoped IM 消息的 owner_user_id 解析内部用户。
+	ownerUserResolver func(ctx context.Context, userID string) (*auth.User, error)
 
 	// eventBus: EventBus subscriber contract（*master.Master 天然满足）。
 	// 未注入时 renderer 路径降级为 legacy Send 路径。
@@ -268,7 +281,28 @@ func (r *Router) SetDedupTimeout(d time.Duration) {
 
 // SetContextEnricher 注入用户上下文丰富器（由 bootstrap 在 auth 启用时设置）
 func (r *Router) SetContextEnricher(fn func(ctx context.Context, externalID, provider string) context.Context) {
+	r.mu.Lock()
 	r.enrichCtx = fn
+	r.mu.Unlock()
+}
+
+// SetOwnerUserResolver 注入 user-scoped IM 消息的 owner 用户解析器。
+func (r *Router) SetOwnerUserResolver(fn func(ctx context.Context, userID string) (*auth.User, error)) {
+	r.mu.Lock()
+	r.ownerUserResolver = fn
+	r.mu.Unlock()
+}
+
+func (r *Router) contextEnricher() func(ctx context.Context, externalID, provider string) context.Context {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.enrichCtx
+}
+
+func (r *Router) lookupOwnerUserResolver() func(ctx context.Context, userID string) (*auth.User, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.ownerUserResolver
 }
 
 // SetEventBusSubscriber 注入 master 的订阅 API（*master.Master 满足契约）。
@@ -389,6 +423,7 @@ func (r *Router) enqueueRetry(msg InboundMessage, reason RetryReason, errMsg str
 	item := RetryItem{
 		MessageID: msg.MessageID,
 		Platform:  string(msg.Platform),
+		TenantKey: msg.TenantKey,
 		ChatID:    msg.ChatID,
 		SenderID:  msg.SenderID,
 		Reason:    reason,
@@ -450,27 +485,38 @@ func (r *Router) UnregisterPlugin(platform Platform) error {
 func (r *Router) Bind(binding Binding) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := string(binding.Platform) + ":" + binding.ChatID
+	tenantKey := normalizeBindingTenantKey(binding.TenantKey)
+	key := bindingKey(binding.Platform, tenantKey, binding.ChatID)
 	r.bindings[key] = binding.SessionID
 	r.logger.Info("IM 通道已绑定",
 		zap.String("platform", string(binding.Platform)),
+		zap.String("tenant_key", tenantKey),
 		zap.String("chat_id", binding.ChatID),
 		zap.String("session_id", binding.SessionID))
 }
 
 // Unbind 解除绑定
 func (r *Router) Unbind(platform Platform, chatID string) {
+	r.UnbindForTenant(platform, defaultTenantKey, chatID)
+}
+
+// UnbindForTenant 解除指定 tenant 的 IM 通道绑定。
+func (r *Router) UnbindForTenant(platform Platform, tenantKey, chatID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := string(platform) + ":" + chatID
-	delete(r.bindings, key)
+	delete(r.bindings, bindingKey(platform, normalizeBindingTenantKey(tenantKey), chatID))
 }
 
 // LookupSession 查找绑定的会话 ID
 func (r *Router) LookupSession(platform Platform, chatID string) string {
+	return r.LookupSessionForTenant(platform, defaultTenantKey, chatID)
+}
+
+// LookupSessionForTenant 查找指定 tenant 绑定的会话 ID。
+func (r *Router) LookupSessionForTenant(platform Platform, tenantKey, chatID string) string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.bindings[string(platform)+":"+chatID]
+	return r.bindings[bindingKey(platform, normalizeBindingTenantKey(tenantKey), chatID)]
 }
 
 // HandleMessage 处理从 IM 平台收到的消息
@@ -560,16 +606,26 @@ func (r *Router) processMessageImpl(msg InboundMessage) {
 		Platform:     string(msg.Platform),
 		ChatType:     msg.ChatType,
 	}
-	if r.enrichCtx != nil && msg.SenderID != "" {
-		ctx = r.enrichCtx(ctx, msg.SenderID, platformToProvider(msg.Platform))
-		if u := auth.UserFrom(ctx); u != nil {
-			imValue.InternalUserID = u.ID
+	if msg.OwnerUserID != "" {
+		user, ok := r.resolveOwnerUser(ctx, msg)
+		if !ok {
+			return
+		}
+		ctx = auth.WithUser(ctx, user)
+		imValue.InternalUserID = user.ID
+	} else {
+		enrichCtx := r.contextEnricher()
+		if enrichCtx != nil && msg.SenderID != "" {
+			ctx = enrichCtx(ctx, msg.SenderID, platformToProvider(msg.Platform))
+			if u := auth.UserFrom(ctx); u != nil {
+				imValue.InternalUserID = u.ID
+			}
 		}
 	}
 	ctx = context.WithValue(ctx, imContextKey{}, imValue)
 
 	// 查找绑定的会话
-	sessionID := r.LookupSession(msg.Platform, msg.ChatID)
+	sessionID := r.LookupSessionForTenant(msg.Platform, msg.TenantKey, msg.ChatID)
 	if sessionID == "" {
 		// 无手动绑定时，自动为每个 IM 聊天创建稳定的独立 session
 		// 防止 IM 消息 fallback 到人类活跃 session，污染前端会话列表
@@ -592,7 +648,7 @@ func (r *Router) processMessageImpl(msg InboundMessage) {
 			return
 		}
 		sessionID = built
-		r.Bind(Binding{Platform: msg.Platform, ChatID: msg.ChatID, SessionID: sessionID})
+		r.Bind(Binding{Platform: msg.Platform, TenantKey: tenantKey, ChatID: msg.ChatID, SessionID: sessionID})
 	}
 
 	r.logger.Info("路由消息",
@@ -620,7 +676,7 @@ func (r *Router) processMessageImpl(msg InboundMessage) {
 		}
 		if result.SessionIDOverride != "" && result.SessionIDOverride != sessionID {
 			sessionID = result.SessionIDOverride
-			r.Bind(Binding{Platform: msg.Platform, ChatID: msg.ChatID, SessionID: sessionID})
+			r.Bind(Binding{Platform: msg.Platform, TenantKey: normalizeBindingTenantKey(msg.TenantKey), ChatID: msg.ChatID, SessionID: sessionID})
 		}
 		if result.ModelOverride != "" {
 			modelOverride = result.ModelOverride
@@ -628,11 +684,12 @@ func (r *Router) processMessageImpl(msg InboundMessage) {
 		if result.Handled {
 			if result.Response != "" {
 				if err := plugin.Send(ctx, OutboundMessage{
-					Platform:  msg.Platform,
-					TenantKey: msg.TenantKey,
-					ChatID:    msg.ChatID,
-					Content:   result.Response,
-					ReplyTo:   msg.MessageID,
+					Platform:    msg.Platform,
+					TenantKey:   msg.TenantKey,
+					OwnerUserID: msg.OwnerUserID,
+					ChatID:      msg.ChatID,
+					Content:     result.Response,
+					ReplyTo:     msg.MessageID,
 				}); err != nil {
 					r.logger.Error("发送命令回复失败",
 						zap.String("message_id", msg.MessageID),
@@ -708,6 +765,58 @@ func (r *Router) resolveInboundContext(ctx context.Context, msg *InboundMessage)
 	return imCtx
 }
 
+func (r *Router) resolveOwnerUser(ctx context.Context, msg InboundMessage) (*auth.User, bool) {
+	if msg.TenantKey != msg.OwnerUserID {
+		errMsg := "owner_user_id 与 tenant_key 不一致"
+		r.logger.Error(errMsg,
+			zap.String("message_id", msg.MessageID),
+			zap.String("platform", string(msg.Platform)),
+			zap.String("tenant_key", msg.TenantKey),
+			zap.String("owner_user_id", msg.OwnerUserID))
+		r.enqueueRetry(msg, RetryReasonHandlerError, errMsg)
+		return nil, false
+	}
+
+	resolver := r.lookupOwnerUserResolver()
+	if resolver == nil {
+		errMsg := "owner user resolver 未注入"
+		r.logger.Error(errMsg,
+			zap.String("message_id", msg.MessageID),
+			zap.String("owner_user_id", msg.OwnerUserID))
+		r.enqueueRetry(msg, RetryReasonHandlerError, errMsg)
+		return nil, false
+	}
+
+	user, err := resolver(ctx, msg.OwnerUserID)
+	if err != nil {
+		errMsg := "owner user resolver 失败: " + err.Error()
+		r.logger.Error("owner user resolver 失败",
+			zap.String("message_id", msg.MessageID),
+			zap.String("owner_user_id", msg.OwnerUserID),
+			zap.Error(err))
+		r.enqueueRetry(msg, RetryReasonHandlerError, errMsg)
+		return nil, false
+	}
+	if user == nil {
+		errMsg := "owner user 不存在"
+		r.logger.Error(errMsg,
+			zap.String("message_id", msg.MessageID),
+			zap.String("owner_user_id", msg.OwnerUserID))
+		r.enqueueRetry(msg, RetryReasonHandlerError, errMsg)
+		return nil, false
+	}
+	if user.Status != "active" {
+		errMsg := "owner user 非 active"
+		r.logger.Error(errMsg,
+			zap.String("message_id", msg.MessageID),
+			zap.String("owner_user_id", msg.OwnerUserID),
+			zap.String("status", user.Status))
+		r.enqueueRetry(msg, RetryReasonHandlerError, errMsg)
+		return nil, false
+	}
+	return user, true
+}
+
 // shouldUseRenderer 读 Router 的 rendererEnabled 与 eventBus 字段决定是否走 renderer 路径。
 // 读取用 RLock 保证与 SetEventBusSubscriber / SetRendererEnabled 的写入并发安全。
 func (r *Router) shouldUseRenderer(platform Platform) bool {
@@ -746,11 +855,12 @@ func (r *Router) processViaLegacySend(ctx context.Context, plugin ChannelPlugin,
 	replyContent = wrapRawJSON(replyContent)
 
 	outMsg := OutboundMessage{
-		Platform:  msg.Platform,
-		TenantKey: msg.TenantKey,
-		ChatID:    msg.ChatID,
-		Content:   replyContent,
-		ReplyTo:   msg.MessageID,
+		Platform:    msg.Platform,
+		TenantKey:   msg.TenantKey,
+		OwnerUserID: msg.OwnerUserID,
+		ChatID:      msg.ChatID,
+		Content:     replyContent,
+		ReplyTo:     msg.MessageID,
 	}
 	if err := plugin.Send(ctx, outMsg); err != nil {
 		r.logger.Error("发送回复失败",
@@ -877,11 +987,12 @@ func (r *Router) processViaRenderer(ctx context.Context, renderer EventRenderer,
 			zap.String("message_id", msg.MessageID),
 			zap.Error(rendErr))
 		fallback := OutboundMessage{
-			Platform:  msg.Platform,
-			TenantKey: msg.TenantKey,
-			ChatID:    msg.ChatID,
-			Content:   wrapRawJSON(rerr.LastContent),
-			ReplyTo:   msg.MessageID,
+			Platform:    msg.Platform,
+			TenantKey:   msg.TenantKey,
+			OwnerUserID: msg.OwnerUserID,
+			ChatID:      msg.ChatID,
+			Content:     wrapRawJSON(rerr.LastContent),
+			ReplyTo:     msg.MessageID,
 		}
 		if sendErr := plugin.Send(ctx, fallback); sendErr != nil {
 			r.logger.Error("renderer 兜底 Send 也失败",
@@ -946,21 +1057,24 @@ func (r *Router) Stop() {
 	r.logger.Info("消息路由器已停止")
 }
 
-// SendMessage 发送消息到指定平台（供工具调用）
-// 实现 tools.IMRouter 接口
-func (r *Router) SendMessage(ctx context.Context, platform, chatID, content string) error {
+// SendMessage 发送消息到指定平台。
+func (r *Router) SendMessage(ctx context.Context, req imctx.SendRequest) error {
 	// 获取平台插件
-	p := Platform(platform)
+	p := Platform(req.Platform)
 	plugin, ok := r.GetPlugin(p)
 	if !ok {
-		return errs.New(errs.CodeChannelPlatformNotFound, "平台未注册: "+platform)
+		return errs.New(errs.CodeChannelPlatformNotFound, "平台未注册: "+string(req.Platform))
 	}
 
 	// 构造消息
 	msg := OutboundMessage{
-		Platform: p,
-		ChatID:   chatID,
-		Content:  content,
+		Platform:    p,
+		TenantKey:   req.TenantKey,
+		OwnerUserID: req.OwnerUserID,
+		ChatID:      req.ChatID,
+		Content:     req.Content,
+		MsgType:     MsgType(req.MsgType),
+		ReplyTo:     req.ReplyTo,
 	}
 
 	// 发送消息
@@ -980,11 +1094,12 @@ func (r *Router) NotifyError(ctx context.Context, msg InboundMessage, processErr
 	}
 
 	errMsg := OutboundMessage{
-		Platform:  msg.Platform,
-		TenantKey: msg.TenantKey,
-		ChatID:    msg.ChatID,
-		Content:   "抱歉，消息处理失败，请稍后重试。",
-		ReplyTo:   msg.MessageID,
+		Platform:    msg.Platform,
+		TenantKey:   msg.TenantKey,
+		OwnerUserID: msg.OwnerUserID,
+		ChatID:      msg.ChatID,
+		Content:     "抱歉，消息处理失败，请稍后重试。",
+		ReplyTo:     msg.MessageID,
 	}
 
 	if err := plugin.Send(ctx, errMsg); err != nil {

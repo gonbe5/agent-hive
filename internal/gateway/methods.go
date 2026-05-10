@@ -29,7 +29,6 @@ type Deps struct {
 	ChannelRouter   *channel.Router          // 可为 nil
 	PluginLoader    *plugin.Manager          // 可为 nil
 	MCPHost         *mcphost.Host            // 可为 nil
-	WechatBackend   interface{}              // 可为 nil, 实际类型为 wechatpadpro.Backend
 	ACPClientPool   *acpclient.ACPClientPool // 可为 nil, 远程 ACP Agent 连接池
 	Config          *config.Config           // 可为 nil, 用于 config.save/reload RPC
 	ConfigMu        *sync.RWMutex            // 保护 Config 并发访问
@@ -68,9 +67,6 @@ func RegisterAllMethods(gw *Gateway, deps Deps) {
 	}
 	if deps.Store != nil {
 		registerResourceMethods(gw, deps)
-	}
-	if deps.WechatBackend != nil {
-		registerWechatMethods(gw, deps)
 	}
 	if deps.ACPClientPool != nil {
 		registerRemoteAgentMethods(gw, deps.ACPClientPool)

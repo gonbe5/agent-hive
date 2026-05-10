@@ -1009,71 +1009,16 @@ func (c *Config) SaveToFile(path string) error {
 
 // ChannelConfig 配置 IM Channel 插件系统
 type ChannelConfig struct {
-	Enabled  bool           `json:"enabled"`
-	DingTalk DingTalkConfig `json:"dingtalk,omitempty"`
-	Feishu   FeishuConfig   `json:"feishu,omitempty"`
-	WeCom    WeComConfig    `json:"wecom,omitempty"`
-	WeChat   WeChatConfig   `json:"wechat,omitempty"`
+	Enabled   bool            `json:"enabled"`
+	DingTalk  DingTalkConfig  `json:"dingtalk,omitempty"`
+	Feishu    FeishuConfig    `json:"feishu,omitempty"`
+	WeCom     WeComConfig     `json:"wecom,omitempty"`
+	WeChatBot WeChatBotConfig `json:"wechatbot,omitempty"`
 }
 
-// WeChatConfig 个人微信配置（多协议支持）
-type WeChatConfig struct {
-	// 向后兼容字段（已废弃，保留用于配置迁移）
-	Enabled  bool   `json:"enabled,omitempty"`
-	Protocol string `json:"protocol,omitempty"`
-
-	// 多协议独立配置（每个协议有独立的开关）
-	Wechaty      WechatyInstanceConfig      `json:"wechaty,omitempty"`
-	WeChatPadPro WeChatPadProInstanceConfig `json:"wechatpadpro,omitempty"`
-}
-
-// UnmarshalJSON 自定义反序列化，支持旧配置格式自动转换
-func (w *WeChatConfig) UnmarshalJSON(data []byte) error {
-	// 先反序列化到临时结构
-	type Alias WeChatConfig
-	aux := &struct {
-		*Alias
-	}{
-		Alias: (*Alias)(w),
-	}
-
-	if err := json.Unmarshal(data, aux); err != nil {
-		return err
-	}
-
-	// 向后兼容：如果使用旧格式（enabled=true + protocol 字段），自动转换为新格式
-	if w.Enabled && w.Protocol != "" {
-		switch w.Protocol {
-		case "wechaty":
-			if !w.Wechaty.Enabled {
-				w.Wechaty.Enabled = true
-			}
-		case "wechatpadpro":
-			if !w.WeChatPadPro.Enabled {
-				w.WeChatPadPro.Enabled = true
-			}
-		}
-	}
-
-	return nil
-}
-
-// WechatyInstanceConfig go-wechaty gRPC 桥接配置
-type WechatyInstanceConfig struct {
-	Enabled  bool   `json:"enabled"`
-	Endpoint string `json:"endpoint"` // gRPC gateway 地址，例如 localhost:8788
-	Token    string `json:"token"`    // Wechaty Puppet Token
-}
-
-// WeChatPadProInstanceConfig WeChatPadPro iPad 协议配置
-type WeChatPadProInstanceConfig struct {
-	Enabled  bool   `json:"enabled"`
-	BaseURL  string `json:"base_url"`            // WeChatPadPro API 地址，默认 http://localhost:8848
-	AppID    string `json:"app_id"`              // 应用 ID（可选）
-	Token    string `json:"token"`               // API Token（可选，用于鉴权）
-	AdminKey string `json:"admin_key,omitempty"` // 管理员 Key，用于自动生成 Token
-	// Timeout 超时时间（秒）- 历史原因使用 int 而非 time.Duration，暂不改动
-	Timeout int `json:"timeout"`
+// WeChatBotConfig 官方 wechatbot 个人微信通道全局开关。
+type WeChatBotConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 // DingTalkConfig 钉钉配置

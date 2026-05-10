@@ -267,6 +267,8 @@ type Master struct {
 	cronMu                    sync.Mutex
 	cronJobs                  map[string]*cronJobState
 	scheduledPromptDispatcher func(context.Context, string) error
+	scheduledTaskUserResolver scheduledTaskUserResolver
+	scheduledTaskPushService  scheduledTaskPushService
 
 	// 当前安全默认策略（热更新时同步，由 llmMu 保护）
 	currentDefaultPolicy string

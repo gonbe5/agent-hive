@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next';
 import { useNodeClient } from '../hooks/useNodeClient';
 import { useAppStore } from '../store/app';
 import { useToastStore } from '../store/toast';
-import { WeChatSettings } from '../components/settings/WeChatSettings';
 import { IMChannelSettings } from '../components/settings/IMChannelSettings';
 import { RemoteAgentsSettings } from '../components/settings/RemoteAgentsSettings';
 import { ExternalResourcesSettings } from '../components/settings/ExternalResourcesSettings';
@@ -88,7 +87,6 @@ export function AdminSettings() {
       {activeTab === 'integrations' && (
         <div className="space-y-8">
           <IMChannelSettings />
-          <WeChatSettings />
           <MCPServersSettings />
           <ExternalResourcesSettings />
           <RemoteAgentsSettings />

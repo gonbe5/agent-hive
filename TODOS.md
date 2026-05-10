@@ -21,11 +21,11 @@
 **Why:** Eng Review 显示 34 条代码/用户流路径当前无任何测试（0%）。4 个关键安全/稳定性缺口（WS 隔离、panic recover、UNIQUE 冲突、Shutdown 超时）均需专项测试。
 
 **Context:**
-- 优先：`TestWeChatWSUserIsolation`（安全）、`TestBindExternalIDConflict`（409）、`TestChannelManagerShutdownTimeout`、`TestBotRunPanicRecover`
-- 测试文件：`internal/channel/wechat/wechat_ws_test.go`、`internal/channel/wechat/channel_manager_test.go`
+- 旧非官方个人微信实现已删除，新增测试不得引用旧协议目录。
+- 优先：`TestWeChatWSUserIsolation`（安全）、`TestBindExternalIDConflict`（409）、`TestBotRegistryShutdownTimeout`、`TestBotRunPanicRecover`
+- 测试文件应放在官方 wechatbot 新包或现有统一 IM 包旁边，例如 `internal/channel/wechatbot/*_test.go`、`internal/channel/router_test.go`、`internal/api/wechat_handlers_test.go`
 - 参照：`internal/channel/router_test.go`（mockPlugin + testify）
-- `go test -race ./internal/channel/wechat/...` 无 data race
-- 当前已有测试：`plugin_test.go`、`wechatpadpro/backend_test.go`、`wechatpadpro/websocket_test.go`、`wechatpadpro/integration_test.go`
+- `go test -race ./internal/channel ./internal/api ./internal/tools` 无 data race
 
 **Effort:** M（human）→ S（CC+gstack）
 **Depends on:** WeChat Phase 1 实施完成
@@ -66,10 +66,10 @@
 **Why:** wechatbot SDK 不支持联系人管理 API，`GET /api/wechat/contacts` 的昵称无法直接从 SDK 拉取。联系人列表显示 wxid_xxxx，用户体验差。
 
 **Context:**
-- 昵称来源：wechatpadpro backend 已有 `status.Nickname` 字段（`wechatpadpro/backend.go:117`），`SetNickname` 方法（line 396）
-- 持久化方案：session metadata 字段存 `{"wxid": "wxid_lisi", "nickname": "李四", "avatar_url": "..."}` 每次收到消息时 upsert
-- contacts API 从 sessions 表中 session_id 前缀 `im-wechatbot-` 的 metadata 里聚合昵称
-- 需改动：`wechatbot/backend.go` 收到消息时写入 metadata、`wechat_handlers.go` contacts 端点改从 sessions 表查
+- 旧协议的昵称读取路径已删除，官方 wechatbot 实现必须只使用 SDK `IncomingMessage` 中可验证的字段。
+- 持久化方案：优先写入 `wechat_conversations.peer_nickname` / `peer_avatar_url`，缺失时再用脱敏 `peer_wxid` 展示。
+- contacts API 从 `wechat_conversations` 查询当前用户的会话摘要，不从旧协议联系人 API 拉取。
+- 需改动：官方 wechatbot 入站 handler 收到消息时 upsert conversation，`wechat_handlers.go` contacts/conversations 端点从 store 查询。
 
 **Effort:** S
 
@@ -130,10 +130,10 @@
 **Why:** Phase 1-3 只支持私聊（1对1）。群聊是微信重要使用场景，但路由逻辑更复杂。
 
 **Context:**
-- 群聊基础设施已部分就绪：`types.go:24` 有 `FromGroup string` 字段，`IsGroup()` 方法，`wechaty/backend.go:259` 已解析 `RoomId`
-- wechatpadpro backend 有群操作方法：`CreateGroup`、`GetGroupDetail`、`InviteToGroup`（lines 306-379）
-- 待实现：enrichCtx 扩展支持 room_id → 路由到 "im-wechatbot-{room_id}" session
-- 需要改动：`wechatbot/backend.go` 的 OnMessage handler、`enrichCtx` 扩展、前端 Session 列表群聊显示
+- 旧协议群聊能力已删除，不能以旧非官方 API 作为设计依据。
+- 当前官方 wechatbot Go SDK / iLink 文档未暴露稳定 RoomID/ChatroomID/GroupID 或 SendToRoom API。
+- 待实现：只有上游 SDK 明确支持群聊后，按 `OwnerUserID + roomID` 进入统一 Router；不得手拼 `im-wechatbot-{room_id}`。
+- 需要改动：官方 wechatbot 入站 handler、conversation store、session 列表群聊显示；`enrichCtx` 不接收 PeerWxid 或 roomID 作为系统用户。
 
 **Effort:** XL（human）→ L（CC+gstack）
 
