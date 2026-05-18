@@ -143,6 +143,22 @@ func AdminOnly(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// AdminOnlyIfAuthElseAllow 如果认证启用则要求 admin 角色，否则允许访问（用于认证未启用时仍需访问的 Admin 路由）
+func AdminOnlyIfAuthElseAllow(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !IsAuthEnabled(r.Context()) {
+			next(w, r)
+			return
+		}
+		user := UserFrom(r.Context())
+		if user == nil || user.Role != "admin" {
+			http.Error(w, `{"error":"需要管理员权限","code":"forbidden"}`, http.StatusForbidden)
+			return
+		}
+		next(w, r)
+	}
+}
+
 // WithUser 将用户注入 context
 func WithUser(ctx context.Context, user *User) context.Context {
 	return context.WithValue(ctx, contextKeyUser, user)

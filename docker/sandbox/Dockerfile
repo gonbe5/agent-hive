@@ -51,7 +51,7 @@ RUN arch="${TARGETARCH:-$(dpkg --print-architecture)}" && \
 
 # ---------- gopls（Go LSP） ----------
 # CGO_ENABLED=0 避开 gcc 工具链，gopls 本身是纯 Go
-RUN CGO_ENABLED=0 GOBIN=/usr/local/bin /usr/local/go/bin/go install golang.org/x/tools/gopls@latest && \
+RUN GOPROXY=https://goproxy.cn CGO_ENABLED=0 GOBIN=/usr/local/bin /usr/local/go/bin/go install golang.org/x/tools/gopls@latest && \
     rm -rf /root/.cache/go-build /root/go/pkg
 
 # ---------- sandbox 用户 + workdir ----------

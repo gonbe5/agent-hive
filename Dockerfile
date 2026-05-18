@@ -39,7 +39,7 @@ WORKDIR /src
 
 # 先下载依赖，利用缓存层
 COPY go.mod go.sum ./
-RUN go mod download
+RUN GOPROXY=https://goproxy.cn go mod download
 
 # 复制全部源码
 COPY . .

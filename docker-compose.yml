@@ -56,7 +56,7 @@ services:
       POSTGRES_SSL_MODE: disable
 
       # ── 会话 & 工具目录 ────────────────────────────────────────────
-      SESSIONS_DIR: /opt/hive/workdir/sessions
+      SESSIONS_DIR: /Users/Zhuanz1/hive-workdir/sessions
       CUSTOM_TOOLS_DIR: /data/tools
 
       # ── LLM 密钥（首次启动后写入数据库，后续可通过 Web UI 修改）──
@@ -73,7 +73,7 @@ services:
       # ⚠️  重要：路径必须与 config.json sessions_dir 完全一致，
       # 且与宿主机实际路径相同（Docker daemon 按宿主机路径解析 -v）。
       # 如修改此路径，同步修改 config.docker.json sessions_dir。
-      - /opt/hive/workdir:/opt/hive/workdir
+      - /Users/Zhuanz1/hive-workdir:/Users/Zhuanz1/hive-workdir
 
       # ── 持久化数据（日志、自定义工具）────────────────────────────
       - hive-logs:/data/logs

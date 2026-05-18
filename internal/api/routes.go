@@ -129,18 +129,6 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("PUT /api/v1/admin/skills/{name}", adminOnly(s.handleUpsertAdminSkill))
 		mux.HandleFunc("DELETE /api/v1/admin/skills/{name}", adminOnly(s.handleDeleteAdminSkill))
 
-		// LLM Provider 管理
-		mux.HandleFunc("GET /api/v1/admin/llm/providers", adminOnly(s.handleAdminListLLMProviders))
-		mux.HandleFunc("POST /api/v1/admin/llm/providers", adminOnly(s.handleAdminCreateLLMProvider))
-		mux.HandleFunc("PATCH /api/v1/admin/llm/providers/{name}", adminOnly(s.handleAdminUpdateLLMProvider))
-		mux.HandleFunc("DELETE /api/v1/admin/llm/providers/{name}", adminOnly(s.handleAdminDeleteLLMProvider))
-
-		// LLM Model 管理
-		mux.HandleFunc("GET /api/v1/admin/llm/models", adminOnly(s.handleAdminListLLMModels))
-		mux.HandleFunc("POST /api/v1/admin/llm/models", adminOnly(s.handleAdminCreateLLMModel))
-		mux.HandleFunc("PATCH /api/v1/admin/llm/models/{name}", adminOnly(s.handleAdminUpdateLLMModel))
-		mux.HandleFunc("DELETE /api/v1/admin/llm/models/{name}", adminOnly(s.handleAdminDeleteLLMModel))
-
 		// Agent Quality 候选用例池
 		mux.HandleFunc("GET /api/v1/admin/quality/cases", adminOnly(s.handleAdminQualityListCases))
 		mux.HandleFunc("POST /api/v1/admin/quality/prompt-smoke", adminOnly(s.handleAdminQualityPromptSmoke))
@@ -201,6 +189,19 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 		// Runtime Policy 只读查看
 		mux.HandleFunc("GET /api/v1/admin/runtime/policy", adminOnly(s.handleAdminRuntimePolicy))
 	}
+
+	// LLM Provider 管理（认证未启用时也允许访问，需要移到条件块外）
+	adminOnlyIfAuthElseAllow := auth.AdminOnlyIfAuthElseAllow
+	mux.HandleFunc("GET /api/v1/admin/llm/providers", adminOnlyIfAuthElseAllow(s.handleAdminListLLMProviders))
+	mux.HandleFunc("POST /api/v1/admin/llm/providers", adminOnlyIfAuthElseAllow(s.handleAdminCreateLLMProvider))
+	mux.HandleFunc("PATCH /api/v1/admin/llm/providers/{name}", adminOnlyIfAuthElseAllow(s.handleAdminUpdateLLMProvider))
+	mux.HandleFunc("DELETE /api/v1/admin/llm/providers/{name}", adminOnlyIfAuthElseAllow(s.handleAdminDeleteLLMProvider))
+
+	// LLM Model 管理（认证未启用时也允许访问，需要移到条件块外）
+	mux.HandleFunc("GET /api/v1/admin/llm/models", adminOnlyIfAuthElseAllow(s.handleAdminListLLMModels))
+	mux.HandleFunc("POST /api/v1/admin/llm/models", adminOnlyIfAuthElseAllow(s.handleAdminCreateLLMModel))
+	mux.HandleFunc("PATCH /api/v1/admin/llm/models/{name}", adminOnlyIfAuthElseAllow(s.handleAdminUpdateLLMModel))
+	mux.HandleFunc("DELETE /api/v1/admin/llm/models/{name}", adminOnlyIfAuthElseAllow(s.handleAdminDeleteLLMModel))
 
 	// 图片临时文件服务（Gemini inlineData 生成的图片，通过 /api/images/<filename> 访问）
 	mux.HandleFunc("/api/images/", handleServeImage)

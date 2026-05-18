@@ -22,8 +22,8 @@ func (s *Server) currentWeChatUser(w http.ResponseWriter, r *http.Request) (*aut
 		}
 		return user, true
 	}
-	writeJSON(w, http.StatusUnauthorized, ErrorResponse{Error: "微信连接需要登录用户", Code: errs.CodePermissionDenied})
-	return nil, false
+	// 认证未启用时，允许匿名访问
+	return &auth.User{ID: "anonymous"}, true
 }
 
 func (s *Server) handleWeChatStatus(w http.ResponseWriter, r *http.Request) {
